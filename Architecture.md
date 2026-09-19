@@ -98,6 +98,7 @@ Keep ROS-level interfaces stable. Replace underlying sensor/actuator drivers rat
 ```text
 src/
 ├── fire_resq_interfaces/
+├── fire_resq_description/
 ├── fire_resq_perception/
 ├── fire_resq_world_model/
 ├── fire_resq_cognition/
@@ -114,6 +115,8 @@ simulation/
 tests/
 docs/
 ```
+
+`fire_resq_description` holds the reusable robot description (URDF/xacro) and robot model assets. It is independent of Gazebo-specific simulation logic so that both simulation and physical hardware bringup can depend on it.
 
 ## 10. Architecture TODOs
 - TODO: uncertainty propagation.
