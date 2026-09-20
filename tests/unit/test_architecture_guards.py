@@ -41,3 +41,19 @@ def test_cognition_and_planning_do_not_import_hardware_or_gazebo():
             text = _code(p)
             assert 'fire_resq_hardware' not in text, p
             assert not re.search(r'^\s*(import|from)\s+(gz|ignition|ros_gz|RPi|serial)', text, re.M), p
+
+
+def test_perception_stays_camera_and_simulator_agnostic():
+    """Perception runs unchanged on the simulated and the real robot: stable ROS topics and TF only."""
+    for p in (SRC / 'fire_resq_perception').rglob('*.py'):
+        text = _code(p)
+        assert not re.search(r'^\s*(import|from)\s+(gz|ignition|ros_gz|RPi|serial|pyrealsense2)', text, re.M), p
+        assert 'fire_resq_hardware' not in text, p
+
+
+def test_cognition_and_planning_cannot_branch_on_which_camera_backend_produced_a_position():
+    """`source_backend` is provenance for logs and evaluation. Cognition must not be able to tell RGB from RGB-D
+    (Architecture.md section 4), so it may not read the field."""
+    for pkg in ('fire_resq_cognition', 'fire_resq_planning', 'fire_resq_world_model'):
+        for p in (SRC / pkg).rglob('*.py'):
+            assert 'source_backend' not in _code(p), p

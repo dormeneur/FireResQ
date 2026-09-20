@@ -161,6 +161,22 @@ CPU by process (cores): Gazebo server 0.90, ros_gz bridges 0.30, depth→scan 0.
 - **RViz** (`fire_resq_navigation/rviz/navigation.rviz`) starts cleanly (one instance; standalone under D3D12, llvmpipe and forced-software GL: 0 errors), every displayed topic carries data in the right frame (`/scan` in `camera_link`; `/map` and the global costmap in `map`; the local costmap and footprint in `odom`), `/plan` carries the path, and a goal published on `/goal_pose` — what the "2D Goal Pose" tool sends — drives the robot. **Not verified visually:** once the Map display is created RViz logs `[ERROR] rviz/glsl120/indexed_8bit_image ... GLSL link result :` (empty). Screen capture is unavailable under WSLg (`X get_image` fails), so whether the map layer renders could not be confirmed by eye. If the map layer is blank, try `LIBGL_ALWAYS_SOFTWARE=1 ros2 launch ... use_rviz:=true`. (An earlier double-RViz launch-argument leak was a separate bug and is fixed and guarded by a unit test.)
 - **Nav2 and SLAM need the sim clock.** Everything in the stack runs with `use_sim_time:=true`; `arena_nav.launch.py` sets it.
 
+## 6c. Phase 5 measurements — perception
+
+Arena + RGB and depth cameras + `perception_node`, headless, D3D12/NVIDIA; one simulator and one node running (measured with a per-thread CPU script, after an earlier reading was inflated by a leftover second node).
+
+| | Measured |
+| --- | --- |
+| `/fire_resq/detections` rate | 22–25 Hz (one message per RGB frame, so it follows the camera) |
+| Detection latency (message stamp vs receipt, sim time) | < 0.25 s median (asserted); the stamp is the image's own |
+| Processing per RGB frame | 5.6–5.9 ms average inside the node (detector 3–6 ms, depth estimator < 1 ms, conversions < 1 ms) |
+| CPU, `perception_node` | **0.49 cores** (main thread 0.24–0.27, TF listener thread ~0.03, the rest DDS) |
+
+- **Why it is single-threaded.** The first version ran under a `MultiThreadedExecutor` with the TF listener on the node: **1.24 cores** and 24.7 ms per frame, almost all of it rclpy executor wait-set bookkeeping (`profile`: `Waitable.__add__` 1.5 M calls in 50 s), not the vision work. A single-threaded node with the listener on its own node and thread costs 0.49 cores.
+- **OpenCV uses 16 threads by default**, which flatters per-call time (3.4 ms detector vs 5.9 ms on one thread). Nothing sets `cv2.setNumThreads`; if perception ever competes with SLAM/Nav2 for cores, that is a knob.
+- **No new dependencies:** OpenCV 4.6 and numpy 1.26 were already installed; no `cv_bridge` (image conversion is done directly, so no ABI coupling to NumPy 2).
+- The accuracy numbers are in [Implementation_Plan.md](Implementation_Plan.md) Phase 5; `tests/sim/experiments/perception_accuracy.py` reproduces them.
+
 ## 7. How to re-verify
 
 ```bash

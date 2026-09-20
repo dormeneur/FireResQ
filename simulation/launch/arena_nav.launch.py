@@ -14,6 +14,7 @@ tests are unchanged.
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 def generate_launch_description():
     sim = Path(get_package_share_directory('fire_resq_simulation')) / 'launch'
     nav = Path(get_package_share_directory('fire_resq_navigation')) / 'launch'
+    perc = Path(get_package_share_directory('fire_resq_perception')) / 'launch'
     return LaunchDescription([
         DeclareLaunchArgument('scenario', default_value='default'),
         DeclareLaunchArgument('gui', default_value='true'),
@@ -32,6 +34,10 @@ def generate_launch_description():
         DeclareLaunchArgument('use_rviz', default_value='false', description='RViz navigation view.'),
         DeclareLaunchArgument('slam_preset', default_value='scan_matching',
                               description='scan_matching (SLAM) | odom_only (NOT SLAM, baseline)'),
+        DeclareLaunchArgument('perception', default_value='false', description='Also run the perception node.'),
+        DeclareLaunchArgument('perception_frame', default_value='map',
+                              description='Frame perception publishes positions in (map needs localization != none).'),
+        DeclareLaunchArgument('spatial_backend', default_value='auto', description='auto | depth | known_height'),
         DeclareLaunchArgument('camera_hfov', default_value='1.518',
                               description='Depth/RGB horizontal FOV, radians (1.518 = 87 deg).'),
         # SCOPED, because launch arguments are GLOBAL across included launch files: the values set for
@@ -47,6 +53,7 @@ def generate_launch_description():
                     'gui': LaunchConfiguration('gui'),
                     'use_depth': 'true',                   # the navigation stack needs depth
                     'use_rviz': 'false',                   # RViz comes from the navigation stack
+                    'perception': 'false',                 # ...and so does perception (in `map`); else it would start twice
                     'camera_hfov': LaunchConfiguration('camera_hfov'),
                 }.items()),
         ]),
@@ -58,4 +65,11 @@ def generate_launch_description():
                               'navigation': LaunchConfiguration('navigation'),
                               'use_rviz': LaunchConfiguration('use_rviz'),
                               'slam_preset': LaunchConfiguration('slam_preset')}.items()),
+        GroupAction(scoped=True, condition=IfCondition(LaunchConfiguration('perception')), actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(str(perc / 'perception.launch.py')),
+                launch_arguments={'use_sim_time': 'true',
+                                  'target_frame': LaunchConfiguration('perception_frame'),
+                                  'spatial_backend': LaunchConfiguration('spatial_backend')}.items()),
+        ]),
     ])

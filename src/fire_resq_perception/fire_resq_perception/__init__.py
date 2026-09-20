@@ -1,19 +1,21 @@
-"""Perception layer - camera to camera-agnostic detections.
+"""Perception: camera image (+ depth) -> camera-agnostic detections with positions.
 
-    Responsibility (Architecture.md section 3, Implementation_Plan.md section 7):
-        image (+ depth) -> Detector -> 2D detections
-                        -> SpatialEstimator -> 3D points in map
-                        -> fire_resq_interfaces/DetectionArray
+    RGB image -> Detector -> 2D detections -> SpatialEstimator -> position in base_link -> TF -> map
 
-    The whole point of this package is that NOTHING above it can tell which camera
-    backend produced a detection. RGB and RGB-D are interchangeable.
+Both stages are interfaces, which is how camera independence is enforced rather than hoped for:
+the ColorBlobDetector (OpenCV, the MVP) can be replaced by a YOLO-family detector, and the
+DepthEstimator (RGB-D) and KnownHeightEstimator (RGB-only) are interchangeable. Nothing above this
+package may look at `Detection.source_backend`.
 
-    Implemented in Phase 5. Empty by design until then.
+Detection uses the RGB image only; depth is used only to place a detection in space. RGB and depth
+are separate sensors whose content is offset in time (~40 ms), so positions are withheld while the
+camera turns (motion_gate.py).
 
-    TODO(phase-5): Detector interface + ColorBlobDetector (OpenCV HSV).
-    TODO(phase-5): SpatialEstimator interface + GroundPlaneEstimator (RGB)
-                   and DepthEstimator (RGB-D).
-    TODO(phase-5b): YoloDetector behind the same Detector interface.
-    TODO(future): propagate geometric uncertainty into detection confidence
-                  rather than passing the detector score through unchanged.
+Modules: types, config, image_utils, motion_gate, detectors/, spatial/, pipeline, perception_node.
+
+TODO(future): uncertainty - a position covariance in Detection.msg and calibrated confidence.
+TODO(future): active perception - deliberately viewing an uncertain region (information gain).
+TODO(phase-5b / hardware): YoloDetector if colour blobs prove brittle on real cameras.
+TODO(hardware): real-camera intrinsics/distortion; RealSense depth registration and noise.
+TODO(future): obstacle and safe-zone detection; occlusion handling; marker-assisted estimation.
 """

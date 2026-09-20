@@ -41,15 +41,16 @@ def scenario():
     return load_scenario(resolve_scenario('default'))
 
 
-def _bring_up(args, depth, launch_file='arena.launch.py', scan=False, nav=False, wait_map=None):
+def _bring_up(args, depth, launch_file='arena.launch.py', scan=False, nav=False, wait_map=None, perception=False):
     """Launch, wait until the robot is publishing and has settled, return a handle bundle."""
     ctx = run_sim(args, launch_file=launch_file)
     sim = ctx.__enter__()
     bot = gt = None
     try:
-        bot = Bot(depth=depth, scan=scan, nav=nav)
+        bot = Bot(depth=depth, scan=scan, nav=nav, perception=perception)
         gt = GroundTruth()
-        needed = ['odom', 'rgb', 'joint_states'] + (['depth'] if depth else []) + (['scan'] if scan else [])
+        needed = (['odom', 'rgb', 'joint_states'] + (['depth'] if depth else []) + (['scan'] if scan else [])
+                  + (['detections'] if perception else []))
         bot.wait_for(lambda: all(bot.counts[k] > 5 for k in needed) and gt.get() is not None
                      and 'rgb_info' in bot.msgs and (not depth or 'depth_info' in bot.msgs)
                      and (not (nav if wait_map is None else wait_map) or (len(bot.grids) > 0 and bot.map_pose() is not None)),
@@ -73,6 +74,31 @@ def _teardown(env):
 @pytest.fixture(scope='module')
 def arena():
     env = _bring_up([], depth=True)
+    yield env
+    _teardown(env)
+
+
+@pytest.fixture(scope='session')
+def truth(scenario):
+    t = {'fire': scenario.world_to_odom(scenario.fire.x, scenario.fire.y)}
+    t.update({v.id: scenario.world_to_odom(v.x, v.y) for v in scenario.victims})
+    return t
+
+
+@pytest.fixture(scope='module')
+def percsim():
+    """The arena (60 deg camera) with the perception node running; detections are published in `odom`."""
+    env = _bring_up(['perception:=true'], depth=True, perception=True)
+    yield env
+    _teardown(env)
+
+
+@pytest.fixture(scope='module')
+def percsim_nav():
+    """arena_nav.launch.py (87 deg camera) with perception on - proves the navigation launch wires it too.
+    No localization, so positions are in `odom`."""
+    env = _bring_up(['localization:=none', 'navigation:=false', 'perception:=true', 'perception_frame:=odom'],
+                    depth=True, launch_file='arena_nav.launch.py', scan=True, perception=True)
     yield env
     _teardown(env)
 
@@ -185,8 +211,8 @@ def arena_factory():
     """For tests that need their own launches (RGB-only, repeatability)."""
     made = []
 
-    def make(args=(), depth=True):
-        env = _bring_up(list(args), depth)
+    def make(args=(), depth=True, perception=False):
+        env = _bring_up(list(args), depth, perception=perception)
         made.append(env)
         return env
 

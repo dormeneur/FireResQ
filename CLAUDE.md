@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–4 complete** — the ROS 2 workspace builds (ten packages); the simulated robot drives, reports odometry and joint states and publishes RGB/depth; a deterministic 5 m × 5 m rescue arena (fire, three victims, safe zone, obstacles) launches from a scenario file; and a navigation stack (depth → `/scan`, SLAM Toolbox or AMCL for `map→odom`, Nav2) maps the arena and drives to supplied goals. All of it is covered by a regression suite that checks against Gazebo ground truth (`tests/`). Perception, world model, cognition, rescue planning and the electromagnet are not implemented; those packages are skeletons. See [docs/Implementation_Plan.md](docs/Implementation_Plan.md) for the phase roadmap and what each phase may touch.
+**Phases 0–5 complete** — the ROS 2 workspace builds (ten packages); the simulated robot drives, reports odometry and joint states and publishes RGB/depth; a deterministic 5 m × 5 m rescue arena (fire, three victims, safe zone, obstacles) launches from a scenario file; and a navigation stack (depth → `/scan`, SLAM Toolbox or AMCL for `map→odom`, Nav2) maps the arena and drives to supplied goals; and a perception node finds the fire and victims by colour and places them in a TF frame (depth or, RGB-only, from object-height priors) on `/fire_resq/detections`. All of it is covered by a regression suite that checks against Gazebo ground truth (`tests/`). The world model, cognition, rescue planning and the electromagnet are not implemented; those packages are skeletons. See [docs/Implementation_Plan.md](docs/Implementation_Plan.md) for the phase roadmap and what each phase may touch.
 
 Design docs remain the source of truth:
 
@@ -97,6 +97,13 @@ ros2 launch fire_resq_simulation arena_nav.launch.py localization:=amcl map:=/tm
 #   ...then give the start pose: RViz "2D Pose Estimate", or publish /initialpose. Send goals with RViz "2D Goal
 #   Pose" (/goal_pose) or the /navigate_to_pose action.
 
+# PERCEPTION (Phase 5): opt-in on either launch; publishes /fire_resq/detections
+ros2 launch fire_resq_simulation arena.launch.py perception:=true                       # positions in `odom` (no SLAM here)
+ros2 launch fire_resq_simulation arena.launch.py use_depth:=false perception:=true       # RGB-only robot: known-height estimator
+ros2 launch fire_resq_simulation arena_nav.launch.py perception:=true                    # positions in `map` (needs localization != none)
+ros2 launch fire_resq_perception perception.launch.py target_frame:=odom spatial_backend:=known_height   # the node alone (also what hardware runs)
+ros2 topic echo /fire_resq/detections --once
+
 # robot-only bringup in an EMPTY world (what arena.launch.py wraps)
 ros2 launch fire_resq_simulation sim.launch.py                        # Gazebo GUI
 ros2 launch fire_resq_simulation sim.launch.py gui:=false             # headless (server only)
@@ -107,16 +114,17 @@ ros2 launch fire_resq_simulation sim.launch.py world:=/abs/path.sdf x:=1.0 y:=0.
 
 ### Tests
 
-Two tiers (config in `pytest.ini`). Source the workspace first (`source install/setup.bash`).
+Three tiers (config in `pytest.ini`). Source the workspace first (`source install/setup.bash`).
 
 ```bash
 python3 -m pytest tests/unit -q                       # <1 s: scenario, robot params, Nav2 params, launch/config rules, architecture guards
-python3 -m pytest tests/sim -m "not slow" -q          # ~16 min: launches the real sim (one per module) - robot, TF, sensors, arena, scan, SLAM, AMCL, Nav2
-python3 -m pytest tests -q -rPx                       # EVERYTHING incl. slow (RGB-only, determinism): 131 passed + 1 xfail in ~19 min; -rPx prints the MEASURED values
+python3 -m pytest tests/node -q                       # ~25 s: the perception node in-process against synthetic ROS traffic (no Gazebo)
+python3 -m pytest tests/sim -m "not slow" -q          # ~20 min: launches the real sim (one per module) - robot, TF, sensors, arena, scan, SLAM, AMCL, Nav2
+python3 -m pytest tests -q -rPx                       # EVERYTHING incl. slow (RGB-only, determinism): 217 passed + 1 xfail in ~26 min (134 unit, 8 node, 76 sim); -rPx prints the MEASURED values
 python3 -m pytest tests/sim/test_robot.py -k spin -v  # one module / one case
 ```
 
-**Reproducible experiments** (not tests; pytest does not collect them) live in `tests/sim/experiments/`: `slam_fov_spike.py` (the Phase 4 Step 0 SLAM viability/tuning measurements), `nav2_localization_diag.py` (SLAM/odometry error vs velocity while Nav2 drives), `nav_performance.py` (rates, map-update cadence, CPU, RTF).
+**Reproducible experiments** (not tests; pytest does not collect them) live in `tests/sim/experiments/`: `slam_fov_spike.py` (the Phase 4 Step 0 SLAM viability/tuning measurements), `nav2_localization_diag.py` (SLAM/odometry error vs velocity while Nav2 drives), `nav_performance.py` (rates, map-update cadence, CPU, RTF), `perception_accuracy.py` (Phase 5: position error per estimator and range, and what the motion gate costs and buys).
 
 The sim tests launch and tear down their own simulation (own process group; no strays), so don't have another sim running - the suite refuses to start on top of one. They judge the robot against Gazebo ground truth, which is why they exist: odometry alone cannot see a robot that isn't moving. They read parameters (wheel radius, limits, camera FOV) from the xacro files, so they can't drift from the source of truth. Unit tests include guards that robot code never reads the scenario, never consumes Gazebo ground truth, and cognition/planning never import hardware.
 
@@ -151,9 +159,9 @@ ros2 topic hz /camera/image_raw                             # expect ~22-26 Hz; 
 
 ```text
 src/fire_resq_interfaces/     msg, srv, action — definitions only, no logic
-src/fire_resq_description/    URDF/xacro. REUSABLE: no Gazebo content, shared with hardware
+src/fire_resq_description/    URDF/xacro + a tiny Python reader of parameters.xacro. REUSABLE: no Gazebo content, shared with hardware
 src/fire_resq_navigation/     depth->/scan, SLAM Toolbox / AMCL / Nav2 config + launch. Shared with hardware; no Gazebo, no scenario
-src/fire_resq_perception/     Phase 5   detector + spatial estimation
+src/fire_resq_perception/     Phase 5 ✅ colour detector + depth / known-height spatial estimation -> /fire_resq/detections. Shared with hardware
 src/fire_resq_world_model/    Phase 6   sole owner of believed state
 src/fire_resq_cognition/      Phase 8   VictimPrioritizer implementations
 src/fire_resq_planning/       Phase 10  rescue FSM + Nav2 client
@@ -199,6 +207,23 @@ depth image ──depthimage_to_laserscan──> /scan ──┬─ SLAM Toolbox
 
 **Not implemented on purpose** (explicit TODOs in code): autonomous exploration (tests supply goals; exploration belongs to the rescue loop), recovery behaviours, sensor noise, loop closure (it made every narrow-FOV configuration worse), an RGB-only visual-SLAM alternative, RealSense integration, dynamic environments. **Encoder-only heading drift** is a recorded hardware risk (Hardware.md TODO); an IMU is deferred, not required.
 
+## Perception (Phase 5)
+
+```text
+RGB (+ depth) + CameraInfo + TF ──> ColorBlobDetector ──> 2D detections ──> DepthEstimator | KnownHeightEstimator ──> /fire_resq/detections (target frame)
+                                                                  MotionGate: no position while the camera turns
+```
+
+One node (`perception_node`), a library behind two interfaces (`Detector`, `SpatialEstimator`); `fire_resq_perception` is shared with hardware and knows nothing of Gazebo or the scenario. The class colours and the size priors live in `config/perception.yaml`; the floor offset is read from `parameters.xacro` at launch. Numbers and the full limitations list are in [docs/Implementation_Plan.md](docs/Implementation_Plan.md) Phase 5. What you must not forget:
+- **The RGB-only estimator uses the blob's TOP edge, not its base.** The camera is 8.75 cm above the floor, so a base ray meets the floor at a grazing angle: measured 13–44 cm error on victims (57 cm on the fire) against 1–4 cm for the top edge. Don't "fix" it back to a ground plane. Its error grows with range² (1 px ≈ 4 cm at 3 m).
+- **Positions are withheld while the camera turns (> 0.1 rad/s) or drives fast (> 0.3 m/s)** because RGB, depth and TF are offset in time; the 2D detection is still published with `position_valid=false`. Measured, the harm of not gating is small (~1–2 cm at 0.4 rad/s for these objects), so the thresholds are parameters, not law.
+- **A blob touching the image border gets no position**, so objects closer than ~0.5–1 m are 2D-only. The rescue approach must use the world model's stored position for the last metre, not live perception.
+- **`Detection.source_backend` is provenance only.** Cognition/planning/world model must not read it (unit guard). Depth vs RGB-only is invisible above perception.
+- **Colour is the whole MVP detector** (the Phase 3 contract). Priors (heights, axis offsets) describe the current victim/fire models and are unit-tested against the SDFs; the fire's axis offset was tuned from measurement (0.085 left a −3 cm bias). A new fire model needs new priors.
+- The node is single-threaded with the TF listener on its own thread. A `MultiThreadedExecutor` cost 1.24 cores in rclpy wait-set bookkeeping; this costs ~0.5.
+- Positions are verified in `odom` only (no SLAM in the arena launch). `map` is the same code with `target_frame:=map`; not yet run against a live `map→odom`.
+- Not implemented on purpose (explicit TODOs): position uncertainty, active perception, `YoloDetector`, occlusion handling, obstacle/safe-zone detection, sensor noise, real-camera calibration.
+
 ## The rescue arena (Phase 3)
 
 **The scenario YAML is the only place object placement lives** (`simulation/config/scenarios/default.yaml`; schema documented in its header, unknown keys rejected). It is simulator ground truth: **no robot node may read it** (a unit-test guard enforces this) — the robot learns the world through perception → world model. The world SDF is *generated* from it at every launch (byte-identical output for identical YAML), by injecting the scenario into the shared base world so physics/plugins are defined once. Layout rules (wall/obstacle clearance, victim spacing > the world model's association gate, nothing overlapping, no victim in the safe zone) are validated at load, so a bad generated scenario fails loudly. To try another layout, write another YAML.
@@ -221,13 +246,13 @@ Nearest-first and risk-aware prioritisation give *different answers* here (victi
 
 **Each victim has a steel attachment ring** (bottom 55 mm, r 56 mm) at the electromagnet's height, so the magnet meets metal from any approach bearing; single dynamic link `base_link` for the Phase 9 detachable joint. Victims are dynamic bodies and were verified not to drift, sink or topple.
 
-**RGB and depth are separate sensors whose content is offset by ~40 ms** (measured: ~10 px at 0.4 rad/s even when timestamps match; the depth stream is exactly time-aligned to the true pose, so it is the RGB image that is late). Never fuse a single depth pixel with an RGB blob from a *moving* camera — it can land on the wall behind a thin object. The tests look while stationary (`survey()`: turn a step, stop, sample). Phase 5 perception must do the same, or use aligned depth and a robust depth over the blob's pixels.
+**RGB and depth are separate sensors whose content is offset by ~40 ms** (measured: ~10 px at 0.4 rad/s even when timestamps match; the depth stream is exactly time-aligned to the true pose, so it is the RGB image that is late). Never fuse a single depth pixel with an RGB blob from a *moving* camera — it can land on the wall behind a thin object. The tests look while stationary (`survey()`: turn a step, stop, sample). Phase 5 perception does the same (see "Perception" below).
 
 **The description/simulation split is load-bearing.** `fire_resq_description` has no `<gazebo>` tags; `simulation/urdf/fire_resq_gazebo.urdf.xacro` includes it and layers simulator content on top. Keep it that way — it is what makes the sim-to-hardware swap a driver change.
 
 ## Build order
 
-**Next up: Phase 5** — perception (colour-blob detector + spatial estimation → `DetectionArray`; respect the RGB/depth offset). Phases 0–4 are done; [docs/Implementation_Plan.md](docs/Implementation_Plan.md) §13 defines each phase's scope, verification, and definition of done. Do not implement ahead of the current phase — the TODO markers in each package mark where later work attaches.
+**Next up: Phase 6** — the world model (stable beliefs from noisy detections: entity registry, association, smoothing, confidence decay, `/fire_resq/world_state`; it depends on Phases 4 and 5, so it will also need positions in `map`). Phases 0–5 are done; [docs/Implementation_Plan.md](docs/Implementation_Plan.md) §13 defines each phase's scope, verification, and definition of done. Do not implement ahead of the current phase — the TODO markers in each package mark where later work attaches.
 
 Work down the simulation ladder in [docs/Simulation.md](docs/Simulation.md) — each stage is verifiable on its own and later stages assume earlier ones work: robot spawns and drives via `/cmd_vel` → simulated camera/depth + odometry → SLAM map and localization → perception detections → world model ingests detections → decision engine picks a victim dynamically → Nav2 drives to it → simulated electromagnet attach/release → return to safe zone → mark rescued and select the next target.
 

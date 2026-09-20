@@ -1,0 +1,54 @@
+# FireResQ perception node parameters. Camera- and simulator-agnostic: topic names are the stable
+# ROS interface, and everything about WHAT to look for is here.
+perception_node:
+  ros__parameters:
+    # ---- interface -------------------------------------------------------------------------
+    rgb_topic: /camera/image_raw
+    camera_info_topic: /camera/camera_info
+    depth_topic: /camera/depth/image_raw          # optional: absent on an RGB-only robot
+    detections_topic: /fire_resq/detections
+    target_frame: map                             # positions are published in this frame
+    base_frame: base_link
+    odom_frame: odom                              # only used to tell whether the camera is turning
+
+    # ---- spatial estimation ----------------------------------------------------------------
+    # auto: depth when a depth frame is available, else known-height (RGB only) | depth | known_height
+    spatial_backend: auto
+    known_height_anchor: top                      # top | bottom. The TOP is far better conditioned for
+                                                  # this low camera (see known_height.py); bottom kept for measurement.
+    depth_pair_max_dt: 0.1                        # RGB and depth are separate sensors: pair by nearest stamp
+
+    # ---- RGB/depth timing offset: only place things while the camera is steady ---------------
+    # Measured: RGB is offset ~40 ms from depth/TF => ~10 px at 0.4 rad/s. Rotation is what hurts.
+    max_angular_rate: 0.1                         # rad/s  (~1.4 px at 87 deg)
+    max_linear_speed: 0.3                         # m/s    (driving speed costs ~1 cm)
+    gate_window_s: 0.3
+
+    min_confidence: 0.2                           # drop specks; consumers may threshold further
+
+    # ---- what to look for: colour (detection) + object-geometry priors (RGB-only estimation) ----
+    # Colours are the Phase 3 contract, measured from rendered frames (every other pixel has S <= 18).
+    # Geometry are facts about the OBJECTS (heights above the floor, radii), never about positions.
+    # They mirror simulation/models/{victim,fire}/model.sdf - a unit test fails if they drift apart.
+    # TODO(hardware): re-measure for the real victims / fire stand-in and the real camera.
+    class_names: [victim, fire]
+    classes:
+      victim:
+        hsv_lo: [100, 100, 40]
+        hsv_hi: [125, 255, 255]
+        min_area_px: 30
+        area_ref_px: 300.0
+        top_height_m: 0.315                       # crown of the head
+        bottom_height_m: 0.055                    # lowest BLUE row: the steel ring below is grey
+        axis_offset_m: 0.05                       # torso radius
+        bottom_axis_offset_m: 0.05
+      fire:
+        hsv_lo: [0, 200, 200]
+        hsv_hi: [30, 255, 255]
+        min_area_px: 30
+        area_ref_px: 300.0
+        top_height_m: 0.47                        # flame apex (0.48)
+        bottom_height_m: 0.06                     # cone base; the darker embers fall below V 200
+        axis_offset_m: 0.115                      # MEASURED (perception_accuracy.py): the nearest surface a depth ray or the top
+                                                  # edge finds is the lower cone (r ~0.10-0.13), not the centroid's 0.085 - that left a -3 cm bias
+        bottom_axis_offset_m: 0.13                # cone base radius

@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 import rclpy
 import tf2_ros
+from fire_resq_interfaces.msg import DetectionArray
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
@@ -251,8 +252,9 @@ def class_masks(rgb):
 
 # ------------------------------------------------------------------ the test robot client
 class Bot(Node):
-    def __init__(self, depth=True, scan=False, nav=False):
+    def __init__(self, depth=True, scan=False, nav=False, perception=False):
         super().__init__('sim_test_bot')
+        self.detections = deque(maxlen=600)     # (sim time received, DetectionArray)
         self.grids = deque(maxlen=5)
         self._nav_client = None
         self.map_odom = []          # (t, x, y, yaw) of map->odom, to judge how erratic SLAM's correction is
@@ -280,6 +282,8 @@ class Bot(Node):
             self.create_subscription(CameraInfo, '/camera/depth/camera_info', self._keep('depth_info'), s)
         if scan:
             self.create_subscription(LaserScan, '/scan', self._scan, s)
+        if perception:
+            self.create_subscription(DetectionArray, '/fire_resq/detections', self._detections, 10)
         if nav:
             self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.create_subscription(OccupancyGrid, '/map', lambda m: self.grids.append(m),
@@ -308,6 +312,10 @@ class Bot(Node):
         self.counts['rgb'] += 1
         self.rgb_buf.append(m)
         self.msgs['rgb'] = m
+
+    def _detections(self, m):
+        self.counts['detections'] += 1
+        self.detections.append((self.simt, m))
 
     def _scan(self, m):
         self.counts['scan'] += 1

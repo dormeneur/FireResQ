@@ -4,6 +4,7 @@
   ros2 launch fire_resq_simulation arena.launch.py gui:=false          # headless
   ros2 launch fire_resq_simulation arena.launch.py use_depth:=false    # RGB-only robot
   ros2 launch fire_resq_simulation arena.launch.py scenario:=/path/to/other.yaml
+  ros2 launch fire_resq_simulation arena.launch.py perception:=true    # + /fire_resq/detections (in `odom`: no SLAM here)
 
 The world is regenerated from the scenario YAML on every launch, and generation is
 deterministic (same YAML -> byte-identical SDF), so the same command always starts the same
@@ -17,7 +18,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction)
+    AppendEnvironmentVariable, DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -50,6 +51,17 @@ def _setup(context, *args, **kwargs):
                 'camera_hfov': LaunchConfiguration('camera_hfov').perform(context),
             }.items()),
     ]
+    if LaunchConfiguration('perception').perform(context).lower() == 'true':
+        # Scoped: the perception launch's own arguments (use_sim_time, target_frame, ...) must not leak into the
+        # arguments of whatever included this file (see arena_nav.launch.py).
+        actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(str(Path(get_package_share_directory('fire_resq_perception'))
+                                             / 'launch' / 'perception.launch.py')),
+            launch_arguments={
+                'use_sim_time': 'true',
+                'target_frame': LaunchConfiguration('perception_frame').perform(context),
+                'spatial_backend': LaunchConfiguration('spatial_backend').perform(context),
+            }.items())]))
     if overview:
         actions.append(Node(
             package='ros_gz_bridge', executable='parameter_bridge', name='bridge_overview',
@@ -69,6 +81,10 @@ def generate_launch_description():
                               description='Simulate the depth camera (false = RGB-only robot).'),
         DeclareLaunchArgument('camera_hfov', default_value='1.047',
                               description='Camera horizontal FOV, radians (1.047 = 60 deg, 1.518 = 87 deg).'),
+        DeclareLaunchArgument('perception', default_value='false', description='Also run the perception node.'),
+        DeclareLaunchArgument('perception_frame', default_value='odom',
+                              description='Frame perception publishes positions in. This launch has no SLAM, so no `map`.'),
+        DeclareLaunchArgument('spatial_backend', default_value='auto', description='auto | depth | known_height'),
         DeclareLaunchArgument('overview_camera', default_value='false',
                               description='DEBUG: add a top-down camera on /overview/image_raw.'),
         OpaqueFunction(function=_setup),

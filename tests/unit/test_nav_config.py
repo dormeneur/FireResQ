@@ -108,3 +108,26 @@ def test_arena_include_is_scoped_so_it_cannot_overwrite_the_navigation_arguments
             raise AssertionError('arena.launch.py is included outside a scoped GroupAction')
     groups = [e for e in entities if isinstance(e, GroupAction)]
     assert groups and all(g._GroupAction__scoped for g in groups)
+
+
+def test_perception_is_opt_in_and_started_once_by_the_navigation_launch():
+    """`perception:=true` on arena_nav.launch.py is a GLOBAL argument, so the arena include would see it too and start a
+    second node. The include must pin perception:=false, and the nav launch's own perception include must be scoped
+    and conditional."""
+    pytest.importorskip('launch')
+    from launch.actions import GroupAction, IncludeLaunchDescription
+
+    def includes(group, launch_file):
+        return [a for a in group.get_sub_entities() if isinstance(a, IncludeLaunchDescription)
+                and launch_file in ''.join(getattr(p, 'text', '') for p in a.launch_description_source._LaunchDescriptionSource__location)]
+    mod = load(REPO / 'simulation' / 'launch' / 'arena_nav.launch.py')
+    entities = mod.generate_launch_description().entities
+    args = {e.name: e for e in entities if type(e).__name__ == 'DeclareLaunchArgument'}
+    assert args['perception'].default_value[0].text == 'false'
+    assert args['perception_frame'].default_value[0].text == 'map'
+    arena_groups = [g for g in entities if isinstance(g, GroupAction) and includes(g, 'arena.launch.py')]
+    assert len(arena_groups) == 1
+    pinned = dict(includes(arena_groups[0], 'arena.launch.py')[0]._IncludeLaunchDescription__launch_arguments)
+    assert pinned['perception'] == 'false'
+    perception = [g for g in entities if isinstance(g, GroupAction) and includes(g, 'perception.launch.py')]
+    assert len(perception) == 1 and perception[0].condition is not None and perception[0]._GroupAction__scoped

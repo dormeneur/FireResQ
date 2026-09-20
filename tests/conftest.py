@@ -1,5 +1,8 @@
-"""Make the simulation package importable without a build (unit tests run from a bare checkout)."""
+"""Make the workspace's pure-Python packages importable without a build (unit tests run from a bare
+checkout)."""
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'simulation'))
+ROOT = Path(__file__).resolve().parents[1]
+for rel in ('simulation', 'src/fire_resq_description', 'src/fire_resq_navigation', 'src/fire_resq_perception'):
+    sys.path.insert(0, str(ROOT / rel))
