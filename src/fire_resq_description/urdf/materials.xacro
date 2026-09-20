@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- Visual materials only. Gazebo-specific materials live in the simulation package. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <material name="chassis_grey"><color rgba="0.35 0.38 0.42 1.0"/></material>
+  <material name="wheel_black"><color rgba="0.12 0.12 0.12 1.0"/></material>
+  <material name="caster_silver"><color rgba="0.65 0.65 0.68 1.0"/></material>
+  <material name="camera_blue"><color rgba="0.15 0.35 0.70 1.0"/></material>
+  <material name="magnet_copper"><color rgba="0.72 0.45 0.20 1.0"/></material>
+</robot>

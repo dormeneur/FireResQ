@@ -1,0 +1,179 @@
+# Nav2 for the FireResQ 2WD robot: planner + controller + behaviours + BT navigator.
+#
+# Deliberately NOT the stock nav2_bringup set. That launch always starts ten servers (route,
+# docking, collision monitor, velocity smoother ...) tuned for a TurtleBot; this robot needs four.
+#
+# Values marked RENDERED are overwritten at launch from parameters.xacro by nav2_params.py, so the
+# robot's footprint and limits exist in exactly ONE place. The numbers written here for them are
+# only placeholders that keep this file loadable on its own.
+#
+# What is NOT here on purpose (each is a later, explicit TODO - see nav2_params.py):
+#   * recovery behaviours: the BT never backs up (the robot is BLIND behind it: the depth wedge
+#     only looks forward) and never clears costmaps. Recovery from failed navigation is Phase 10+.
+#   * velocity smoother / collision monitor: the simulated drive already limits acceleration, and
+#     the ESP32 firmware must (with its cmd_vel watchdog). TODO(hardware): revisit on the robot.
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # RENDERED: a tree with no BackUp/Spin/Wait/ClearCostmap - replans only if the path goes invalid
+    default_nav_to_pose_bt_xml: ""
+    navigators: ['navigate_to_pose']
+    navigate_to_pose:
+      plugin: nav2_bt_navigator::NavigateToPoseNavigator
+    error_code_names: ['compute_path_error_code', 'follow_path_error_code']
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ['progress_checker']
+    goal_checker_plugins: ['general_goal_checker']
+    controller_plugins: ['FollowPath']
+    progress_checker:
+      plugin: nav2_controller::SimpleProgressChecker
+      required_movement_radius: 0.1
+      movement_time_allowance: 15.0
+    general_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: true
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.15
+    FollowPath:
+      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+      desired_linear_vel: 0.2            # RENDERED (fraction of max_linear_velocity)
+      lookahead_dist: 0.4
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.6
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: false
+      transform_tolerance: 0.2
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.5
+      regulated_linear_scaling_min_speed: 0.1
+      use_cost_regulated_linear_velocity_scaling: false
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.6
+      rotate_to_heading_angular_vel: 1.0 # RENDERED (fraction of max_angular_velocity)
+      max_angular_accel: 3.0             # RENDERED
+      allow_reversing: false             # never reverse: nothing looks backwards
+      max_robot_pose_search_dist: 5.0
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0
+    planner_plugins: ['GridBased']
+    GridBased:
+      plugin: nav2_navfn_planner::NavfnPlanner
+      tolerance: 0.2
+      use_astar: false
+      # Unknown space is plannable: the map is built while driving, and exploration is not
+      # implemented (goals are supplied). TODO(future): tighten once the robot maps before it moves.
+      allow_unknown: true
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ['spin', 'wait']   # no backup / drive_on_heading / assisted_teleop
+    spin:
+      plugin: nav2_behaviors::Spin
+    wait:
+      plugin: nav2_behaviors::Wait
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.2
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0              # RENDERED
+    min_rotational_vel: 0.3
+    rotational_acc_lim: 3.0              # RENDERED
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      robot_radius: 0.17                 # RENDERED (circumscribed radius of the description's footprint)
+      plugins: ['obstacle_layer', 'inflation_layer']
+      obstacle_layer:
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          max_obstacle_height: 2.0
+          marking: true
+          clearing: true
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.0
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.26           # RENDERED (circumscribed radius + margin)
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      resolution: 0.05
+      # ROLLING window, not a costmap sized to the map. The SLAM map only covers what the depth
+      # wedge has SEEN: on the first scan the robot's own position was just outside it, and a
+      # map-sized global costmap made every plan fail with "Start ... was outside bounds" until the
+      # map grew around the robot (measured in Phase 4). A fixed window centred on the robot always
+      # contains it, needs no pre-existing map, and 10 m covers the whole 5 m arena; the SLAM /
+      # saved map still feeds it through the static layer.
+      rolling_window: true
+      width: 10
+      height: 10
+      track_unknown_space: true
+      robot_radius: 0.17                 # RENDERED (circumscribed radius of the description's footprint)
+      plugins: ['static_layer', 'obstacle_layer', 'inflation_layer']
+      static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: nav2_costmap_2d::ObstacleLayer
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          max_obstacle_height: 2.0
+          marking: true
+          clearing: true
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.0
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.26           # RENDERED
+      always_send_full_costmap: true

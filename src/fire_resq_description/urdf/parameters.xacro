@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  Single source of truth for every physical dimension of the FireResQ robot.
+  Nothing else in the description hardcodes a number.
+
+  The robot modelled here is the finalised physical target from Hardware.md section 2:
+  a low-cost 2WD differential-drive base - two driven wheels plus ONE passive caster.
+  It is not a generic research platform, and the values below are placeholders for a
+  real chassis that has not been purchased yet.
+
+  TODO(hardware): every value in this file must be re-measured on the physical robot.
+                  See Hardware.md section 13 "Hardware-dependent" for what gates each one.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ============ chassis ============ -->
+  <xacro:property name="chassis_length" value="0.20"/>
+  <xacro:property name="chassis_width"  value="0.15"/>
+  <xacro:property name="chassis_height" value="0.05"/>
+  <!-- TODO(hardware): exact chassis dimensions and mass budget (Hardware.md section 14). -->
+  <xacro:property name="chassis_mass"   value="1.20"/>
+
+  <!-- ============ drive wheels ============ -->
+  <!-- TODO(hardware): wheel radius/width from the purchased wheels; wheel_separation
+       measured centre-to-centre. These two values ALSO configure the differential-drive
+       kinematics in simulation and the ESP32 odometry on hardware - they must agree. -->
+  <xacro:property name="wheel_radius"     value="0.0325"/>
+  <xacro:property name="wheel_width"      value="0.026"/>
+  <xacro:property name="wheel_separation" value="0.17"/>
+  <xacro:property name="wheel_mass"       value="0.05"/>
+  <!-- FRAME CONVENTION (load-bearing): base_link is the MIDPOINT OF THE DRIVE AXLE, i.e.
+       the kinematic centre of the differential drive. Differential-drive odometry - Gazebo's
+       plugin and the ESP32 firmware alike - computes the pose of that point and publishes it
+       as base_link. If base_link sat anywhere else, odometry would be wrong whenever the
+       robot turns (found in Phase 2: a 4 cm offset gave 5 cm of phantom motion per spin).
+       So every x below is measured FROM THE AXLE, and the wheels themselves sit at x = 0. -->
+  <!-- Chassis centre relative to the axle (negative = behind it). Puts the centre of mass
+       behind the axle so the caster carries load and the robot cannot tip nose-down. -->
+  <xacro:property name="chassis_x_offset" value="-0.04"/>
+
+  <!-- ============ drive limits ============ -->
+  <!-- What the drive train may be commanded to do. Simulation enforces these in the Gazebo
+       differential-drive system; on hardware the ESP32 firmware must enforce the same
+       numbers, and Nav2 (Phase 7) must be tuned to them.
+       TODO(hardware): replace with values measured from the purchased motors + gearing
+       (no-load speed, safe acceleration on this chassis). These are placeholders sized for
+       a small 2WD base, not measurements. -->
+  <xacro:property name="max_linear_velocity"      value="0.30"/>
+  <xacro:property name="max_angular_velocity"     value="1.50"/>
+  <xacro:property name="max_linear_acceleration"  value="1.00"/>
+  <xacro:property name="max_angular_acceleration" value="3.00"/>
+
+  <!-- ============ passive caster ============ -->
+  <!-- One caster only. Hardware.md section 2: "no 4WD, no steering mechanism". -->
+  <xacro:property name="caster_radius" value="0.015"/>
+  <xacro:property name="caster_mass"   value="0.02"/>
+  <xacro:property name="caster_x"      value="-0.11"/>
+
+  <!-- ============ camera mount ============ -->
+  <!-- TODO(hardware): camera mounting height, tilt and FOV depend on the chosen camera,
+       which is still an open decision (RGB vs RGB-D). Implementation_Plan.md section 16. -->
+  <xacro:property name="camera_x"     value="0.05"/>
+  <xacro:property name="camera_z"     value="0.055"/>
+  <xacro:property name="camera_pitch" value="0.0"/>
+  <xacro:property name="camera_size"  value="0.025"/>
+  <xacro:property name="camera_mass"  value="0.05"/>
+
+  <!-- ============ electromagnet mount ============ -->
+  <!-- Front-mounted, low, per Hardware.md section 6.
+       CONSTRAINT: the magnet's lowest point (magnet_z - magnet_radius) must stay ABOVE the
+       wheel contact plane (-wheel_radius) with real clearance. Phase 2 found the robot
+       resting on the magnet instead of its wheels when this was violated (magnet_z = -0.015
+       put its bottom at -0.033, below the wheels at -0.0325): the wheels hovered, could not
+       drive the body, and wheel-derived odometry reported motion that never happened.
+       TODO(hardware): mounting height and standoff depend on the electromagnet's holding
+       force and the victim attachment point - neither is specified yet. -->
+  <xacro:property name="magnet_x"      value="0.065"/>
+  <xacro:property name="magnet_z"      value="0.0"/>
+  <xacro:property name="magnet_radius" value="0.018"/>
+  <xacro:property name="magnet_length" value="0.02"/>
+  <xacro:property name="magnet_mass"   value="0.08"/>
+
+  <!-- ============ odometry / encoders ============ -->
+  <!-- Not used by the description itself; recorded here so the physical and simulated
+       robots share one definition of the drive train.
+       TODO(hardware): encoder_ticks_per_rev from the purchased motors. Drives odometry
+       resolution and ESP32 interrupt load (Hardware.md section 13). -->
+  <xacro:property name="encoder_ticks_per_rev" value="0"/>
+
+</robot>

@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  FireResQ victim - ONE reusable model. Identity (victim_1, victim_2, ...) and placement come from
+  the scenario file via <include><name>..</name><pose>..</pose>; nothing about WHERE a victim is
+  or WHICH is rescued first lives here.
+
+  Two things matter for the rest of the project:
+
+  1. PERCEPTION CLASS COLOUR. The torso and head are saturated blue. The Phase 5 OpenCV
+     detector classifies "victim" by hue; floor, walls and obstacles are deliberately
+     low-saturation so they cannot match, and fire (orange) and the safe zone (green) sit at
+     other hues. All victims share the class colour on purpose: they are identical objects,
+     like the physical metal victims (Hardware.md), and are told apart by POSITION - the world
+     model assigns identities, the scenario ids are ground truth for evaluation only.
+
+  2. ATTACHMENT GEOMETRY (Phase 9). The bottom 55 mm is a steel-grey ring. The robot's
+     electromagnet sits at axle height (32.5 mm) with a 36 mm face, so it meets metal at any
+     approach bearing without needing to know the victim's yaw. `attachment_point` marks the
+     nominal contact point. The model is a dynamic body with a single link `base_link`, which is
+     what the Gazebo detachable-joint needs for ATTACH/RELEASE.
+     TODO(phase-9): detachable-joint wiring lives on the ROBOT side (magnet_link), not here.
+     TODO(hardware): ring diameter, metal and mass must match the real victims and the real
+                     electromagnet's holding force (Hardware.md TODOs).
+
+  Total mass 0.22 kg with the centre of mass low, so a nudge from the robot does not topple it.
+-->
+<sdf version="1.9">
+  <model name="victim">
+
+    <frame name="attachment_point">
+      <pose relative_to="base_link">0.056 0 0.0325 0 0 0</pose>
+    </frame>
+
+    <link name="base_link">
+      <inertial>
+        <pose>0 0 0.11 0 0 0</pose>
+        <mass>0.22</mass>
+        <inertia>
+          <ixx>0.00179</ixx><iyy>0.00179</iyy><izz>0.00028</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <!-- steel attachment ring: bottom 55 mm -->
+      <collision name="attachment_ring_collision">
+        <pose>0 0 0.0275 0 0 0</pose>
+        <geometry><cylinder><radius>0.056</radius><length>0.055</length></cylinder></geometry>
+        <surface><friction><ode><mu>0.8</mu><mu2>0.8</mu2></ode></friction></surface>
+      </collision>
+      <visual name="attachment_ring">
+        <pose>0 0 0.0275 0 0 0</pose>
+        <geometry><cylinder><radius>0.056</radius><length>0.055</length></cylinder></geometry>
+        <material>
+          <ambient>0.55 0.57 0.60 1</ambient>
+          <diffuse>0.65 0.67 0.70 1</diffuse>
+          <specular>0.9 0.9 0.9 1</specular>
+        </material>
+      </visual>
+
+      <!-- torso -->
+      <collision name="torso_collision">
+        <pose>0 0 0.145 0 0 0</pose>
+        <geometry><cylinder><radius>0.05</radius><length>0.18</length></cylinder></geometry>
+      </collision>
+      <visual name="torso">
+        <pose>0 0 0.145 0 0 0</pose>
+        <geometry><cylinder><radius>0.05</radius><length>0.18</length></cylinder></geometry>
+        <material>
+          <ambient>0.10 0.25 0.85 1</ambient>
+          <diffuse>0.15 0.35 1.00 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- head -->
+      <collision name="head_collision">
+        <pose>0 0 0.275 0 0 0</pose>
+        <geometry><sphere><radius>0.04</radius></sphere></geometry>
+      </collision>
+      <visual name="head">
+        <pose>0 0 0.275 0 0 0</pose>
+        <geometry><sphere><radius>0.04</radius></sphere></geometry>
+        <material>
+          <ambient>0.10 0.25 0.85 1</ambient>
+          <diffuse>0.15 0.35 1.00 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+  </model>
+</sdf>

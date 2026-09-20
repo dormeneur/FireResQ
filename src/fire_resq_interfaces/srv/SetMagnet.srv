@@ -1,0 +1,4 @@
+bool attach
+---
+bool success
+MagnetState state

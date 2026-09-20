@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+  FireResQ robot description - REUSABLE.
+
+  This file describes the physical robot and nothing else. It contains no Gazebo
+  plugins, no sensor definitions and no simulator surface properties, so it is shared
+  unchanged between simulation and the physical robot (Architecture.md section 8).
+
+  Simulation-specific additions live in the fire_resq_simulation package, which
+  includes this file and layers Gazebo concerns on top.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fire_resq">
+
+  <xacro:include filename="$(find fire_resq_description)/urdf/parameters.xacro"/>
+  <xacro:include filename="$(find fire_resq_description)/urdf/materials.xacro"/>
+  <xacro:include filename="$(find fire_resq_description)/urdf/inertia.xacro"/>
+
+  <xacro:include filename="$(find fire_resq_description)/urdf/base.xacro"/>
+  <xacro:include filename="$(find fire_resq_description)/urdf/wheels.xacro"/>
+  <xacro:include filename="$(find fire_resq_description)/urdf/sensors.xacro"/>
+  <xacro:include filename="$(find fire_resq_description)/urdf/magnet.xacro"/>
+
+</robot>

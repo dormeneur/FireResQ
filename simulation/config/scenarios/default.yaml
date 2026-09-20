@@ -1,0 +1,67 @@
+# FireResQ scenario: the ONLY place arena object placement lives.
+#
+# Nothing here is visible to cognition or planning. The robot learns where things are through
+# perception -> world model, exactly as it would on hardware. These numbers are ground truth for
+# the simulator and for evaluation (Phase 11); no robot node may read this file.
+#
+# Frame: WORLD, metres. Arena centred on the origin, +x right, +y up (north), yaw
+# counter-clockwise from +x in radians. The robot's odom frame starts at `robot_start`.
+#
+# Schema (unknown keys are rejected, so a typo fails loudly):
+#   name, description
+#   arena:        size_x, size_y (inner free space), wall_height, wall_thickness
+#   robot_start:  x, y, yaw           spawn pose; must be inside/adjacent to the safe zone
+#   safe_zone:    x, y, size_x, size_y   floor patch, visual only
+#   fire:         x, y, model         model: name under simulation/models/ (replaceable)
+#   victims:      [{id, x, y, yaw}]   ids are ground truth for evaluation, not for the robot
+#   obstacles:    [{name, x, y, size_x, size_y, size_z, yaw}]
+#
+# Layout rules are enforced at load time (see fire_resq_simulation/scenario.py): clearances from
+# walls/obstacles, victim spacing, nothing overlapping, no victim inside the safe zone. Generate
+# new scenarios by writing another YAML; `ros2 launch fire_resq_simulation arena.launch.py
+# scenario:=/path/to/it.yaml`.
+#
+# Design intent of THIS scenario (deterministic, for development and debugging):
+#   * victim_1 is NEAREST the robot but FAR from the fire            (safe, cheap)
+#   * victim_2 is FARTHEST from the robot but right NEXT to the fire (endangered, expensive)
+#   * victim_3 is mid-distance and behind a partition                (needs a detour, and is
+#                                                                      hidden until explored)
+# so nearest-first and risk-aware prioritisation give different answers: the Phase 8/11
+# comparison has something to bite on. `ros2 run fire_resq_simulation generate_world.py
+# --ascii` prints the layout.
+name: default
+description: >
+  5 m x 5 m arena. Robot starts in the south-west safe zone facing north-east. One fire, three
+  victims, one partition and two blocks.
+
+arena:
+  size_x: 5.0
+  size_y: 5.0
+  wall_height: 0.5
+  wall_thickness: 0.10
+
+robot_start:
+  x: -1.9
+  y: -1.9
+  yaw: 0.785398          # pi/4: faces the arena interior
+
+safe_zone:
+  x: -1.9
+  y: -1.9
+  size_x: 1.0
+  size_y: 1.0
+
+fire:
+  model: fire
+  x: 0.9
+  y: 0.6
+
+victims:
+  - {id: victim_1, x: -0.7, y: -1.3}   # near robot, far from fire
+  - {id: victim_2, x: 1.3,  y: 1.6}    # far from robot, next to fire
+  - {id: victim_3, x: -1.5, y: 1.4}    # behind the partition
+
+obstacles:
+  - {name: obstacle_1, x: -1.3, y: 0.5,  size_x: 1.4, size_y: 0.15}   # partition
+  - {name: obstacle_2, x: 0.1,  y: -1.1, size_x: 0.5, size_y: 0.5}
+  - {name: obstacle_3, x: 1.4,  y: -1.2, size_x: 0.6, size_y: 0.3}

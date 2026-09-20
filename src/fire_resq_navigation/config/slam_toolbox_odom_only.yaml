@@ -1,0 +1,86 @@
+# SLAM Toolbox - ODOMETRY-ONLY preset.  *** THIS IS NOT SLAM. ***
+#
+# Scan matching is OFF: the map is built by placing every scan at the pose the ODOMETRY reports.
+# In simulation odometry is noise-free, so this gives a perfect map and a perfect pose - which
+# says nothing about how the robot would do on hardware, where encoder odometry drifts.
+#
+# It exists ONLY as a labelled control/baseline (the reference the scan-matching preset is measured
+# against, and a fallback when debugging navigation independent of SLAM quality). Never present a
+# result from this preset as successful SLAM.
+slam_toolbox:
+  ros__parameters:
+
+    # Plugin params
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ROS Parameters
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link   # this robot has base_link (the drive-axle midpoint), NOT base_footprint
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping #localization
+
+    # if you'd like to immediately start continuing a map at a given pose
+    # or at the dock, but they are mutually exclusive, if pose is given
+    # will use pose
+    #map_file_name: test_steve
+    # map_start_pose: [0.0, 0.0, 0.0]
+    #map_start_at_dock: true
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02 #if 0 never publishes odometry
+    map_update_interval: 1.0
+    resolution: 0.05
+    restamp_tf: false
+    min_laser_range: 0.0 #for rastering images
+    max_laser_range: 8.0   # arena diagonal 7.07 m; matches depth_to_scan.yaml range_max
+    minimum_time_interval: 0.1   # process scans at up to 10 Hz
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
+    enable_interactive_mode: false   # no RViz interaction plugin needed
+    use_scan_matching: false   # OFF: pure odometry mapping, NOT SLAM
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.0   # 0 so spins integrate too
+    minimum_travel_heading: 0.05   # integrate rotation (safe here: nothing is being matched)
+    check_min_dist_and_heading_precisely: false
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 8.0
+    link_match_minimum_response_fine: 0.1  
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: false 
+    loop_match_minimum_chain_size: 10           
+    loop_match_maximum_variance_coarse: 3.0  
+    loop_match_minimum_response_coarse: 0.35    
+    loop_match_minimum_response_fine: 0.45
+
+    # Correlation Parameters - Correlation Parameters
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1 
+
+    # Correlation Parameters - Loop Closure Parameters
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # Scan Matcher Parameters
+    distance_variance_penalty: 0.5      
+    angle_variance_penalty: 1.0    
+
+    fine_search_angle_offset: 0.00349     
+    coarse_search_angle_offset: 0.349   
+    coarse_angle_resolution: 0.0349        
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    min_pass_through: 2
+    occupancy_threshold: 0.1

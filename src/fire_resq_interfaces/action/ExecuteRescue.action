@@ -1,0 +1,9 @@
+# Goal: empty victim_id means "let cognition choose".
+string victim_id
+---
+bool success
+uint8 final_status
+float32 duration_s
+---
+string phase
+string detail

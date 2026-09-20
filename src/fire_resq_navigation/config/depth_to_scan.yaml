@@ -1,0 +1,16 @@
+# depthimage_to_laserscan: turns the depth image into the LaserScan SLAM and Nav2 consume.
+# This is the ONLY place the "no LiDAR" rule is implemented: the scan is synthesised from depth.
+depthimage_to_laserscan:
+  ros__parameters:
+    # camera_link is x-forward / z-up, so a scan labelled with it obeys the LaserScan convention
+    # (angle CCW-positive). Verified against a ray-cast of the true scenario: median error < 1 cm.
+    output_frame: camera_link
+    range_min: 0.2
+    range_max: 8.0          # arena diagonal is 7.07 m
+    # Rows around the optical centre that are collapsed into the scan. KEEP THIS SMALL: at a wide
+    # FOV each row spans more angle, and too many rows start to see the FLOOR (a phantom wall) at
+    # camera_height / tan(rows * angle_per_row) - with 10 rows at 87 deg that is ~6 m.
+    scan_height: 4
+    scan_time: 0.033
+    # TODO(hardware): re-derive range_min/range_max/scan_height for the real camera (RealSense
+    # depth is noisier and has a minimum range of ~0.3 m).

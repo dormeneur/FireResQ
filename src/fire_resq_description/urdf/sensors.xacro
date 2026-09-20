@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  Camera MOUNT only. No Gazebo sensor tags here - the description must stay usable on
+  the physical robot, where the camera is a real device published by its own driver.
+  The simulation package attaches the actual sensor to camera_link.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Mechanical mount frame. -->
+  <link name="camera_link">
+    <visual>
+      <geometry><box size="${camera_size} ${camera_size*2.4} ${camera_size}"/></geometry>
+      <material name="camera_blue"/>
+    </visual>
+    <collision>
+      <geometry><box size="${camera_size} ${camera_size*2.4} ${camera_size}"/></geometry>
+    </collision>
+    <xacro:box_inertia m="${camera_mass}" x="${camera_size}" y="${camera_size*2.4}" z="${camera_size}"/>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${camera_x} 0 ${camera_z}" rpy="0 ${camera_pitch} 0"/>
+  </joint>
+
+  <!--
+    Optical frame, REP-103 convention: x right, y down, z forward.
+    All projection maths (depth lookup, ground-plane back-projection) happens here.
+    Getting this rotation wrong silently places every detection in the wrong spot,
+    which is why Phase 3 verifies it explicitly.
+    Camera-agnostic by design: an RGB or an RGB-D device mounts to the same frames.
+  -->
+  <link name="camera_optical_frame"/>
+
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+</robot>

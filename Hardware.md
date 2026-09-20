@@ -221,6 +221,7 @@ Every physical component has a simulated counterpart, and **simulation never dep
 - TODO: encoder calibration (ticks/rev, wheel radius, wheel separation).
 - TODO: electromagnet hardware interface (switching circuit, flyback, ATTACH/RELEASE + state topic).
 - TODO: physical robot calibration (odometry drift, straight-line and rotation error).
+- TODO: characterise encoder-only heading drift on the real robot. Simulated odometry is noise-free, so no drift has been measured yet, and scan-matching SLAM on the narrow depth wedge gives little heading correction. Revisit an IMU **only if** hardware tests show drift is a real problem — a deliberately deferred decision, NOT a requirement.
 - TODO: hardware safety/watchdog and failsafe — **required before autonomous physical testing**.
 - TODO: exact chassis dimensions and mass budget.
 - TODO: motor voltage/current and stall current measurement.

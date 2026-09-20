@@ -1,0 +1,53 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Cell Size: 0.5
+      Plane Cell Count: 20
+    - Class: rviz_default_plugins/RobotModel
+      Enabled: true
+      Name: RobotModel
+      Description Topic:
+        Value: /robot_description
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+      Marker Scale: 0.2
+      Show Names: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Name: RGB
+      Topic:
+        Value: /camera/image_raw
+        Reliability Policy: Best Effort
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Name: Depth
+      Topic:
+        Value: /camera/depth/image_raw
+        Reliability Policy: Best Effort
+    - Class: rviz_default_plugins/Odometry
+      Enabled: true
+      Name: Odometry
+      Topic:
+        Value: /odom
+      Shape:
+        Value: Arrow
+  Global Options:
+    Fixed Frame: odom
+    Frame Rate: 30
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.5
+      Focal Point: {X: 0, Y: 0, Z: 0}
+      Pitch: 0.6
+      Yaw: 0.9
+Window Geometry:
+  Height: 900
+  Width: 1400

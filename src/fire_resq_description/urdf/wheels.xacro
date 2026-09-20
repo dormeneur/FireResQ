@@ -1,0 +1,62 @@
+<?xml version="1.0"?>
+<!--
+  The two independently driven wheels. There are exactly two - this is a 2WD robot
+  (Hardware.md section 2). Both joints are continuous and are the only actuated DOF.
+
+  On hardware these two joints correspond to the encoder-instrumented motors; in
+  simulation they are driven by the Gazebo differential-drive plugin. Either way the
+  ROS-level interface above them is identical: cmd_vel in, odom + TF out.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    Wheel COLLISION shape - the one thing here that is deliberately selectable:
+      cylinder : the physical truth. Default, so the description stays faithful for
+                 hardware and standalone use.
+      sphere   : a single contact point at the wheel centre. The simulation wrapper selects
+                 this. A flat cylinder in a rigid-body solver gets contact points at its rim
+                 edges and effectively turns about the INNER edge, narrowing the track from
+                 the configured 0.170 m to ~0.144 m and making the simulated robot spin ~18%
+                 more than its wheel odometry says (measured in Phase 2). The rolling radius
+                 is identical; only the lateral contact point changes.
+    The first declaration of an xacro arg wins, so the simulation wrapper declares it first.
+    Visuals are always the cylinder.
+  -->
+  <xacro:arg name="wheel_collision" default="cylinder"/>
+  <xacro:property name="wheel_collision" value="$(arg wheel_collision)"/>
+
+  <xacro:macro name="drive_wheel" params="prefix reflect">
+    <link name="${prefix}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="wheel_black"/>
+      </visual>
+      <xacro:if value="${wheel_collision == 'cylinder'}">
+        <collision>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        </collision>
+      </xacro:if>
+      <xacro:if value="${wheel_collision == 'sphere'}">
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry><sphere radius="${wheel_radius}"/></geometry>
+        </collision>
+      </xacro:if>
+      <xacro:cylinder_inertia m="${wheel_mass}" r="${wheel_radius}" h="${wheel_width}"/>
+    </link>
+
+    <joint name="${prefix}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${prefix}_wheel_link"/>
+      <origin xyz="0 ${reflect * wheel_separation / 2.0} 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <!-- TODO(hardware): joint limits/effort once motor torque and gear ratio are known. -->
+    </joint>
+  </xacro:macro>
+
+  <xacro:drive_wheel prefix="left"  reflect="1"/>
+  <xacro:drive_wheel prefix="right" reflect="-1"/>
+
+</robot>

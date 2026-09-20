@@ -1,0 +1,98 @@
+# SLAM Toolbox - SCAN-MATCHING preset (the Phase 4 default). Genuine scan-matching SLAM.
+#
+# Every non-default value here was chosen from measurement (docs/Implementation_Plan.md, Phase 4
+# Step 0; reproduce with tests/sim/experiments/slam_fov_spike.py), on an 87 deg depth-derived scan:
+#
+#   minimum_travel_heading: 3.1   ROTATION-ONLY SCANS ARE SKIPPED (heading gate effectively off).
+#       Scan-matching every scan, including while the robot spins in place, DIVERGED at both 60 and
+#       87 deg (>= 41 deg yaw and >= 1.3 m position error after three spins, on noise-free
+#       odometry). Skipping rotation-only scans gave 9-14 cm over a 3.7 m route.
+#       CONSEQUENCE: an in-place spin adds NOTHING to the map. The robot must translate to map.
+#   minimum_travel_distance: 0.3  scans are processed once the robot has moved 30 cm. MEASURED over a
+#       14.8 m lap (87 deg): 0.1 m -> 20 cm / 6.3 deg final error; 0.2 m -> 11 cm; 0.3 m -> 0.3-2.3 cm
+#       over three repeats; 0.4 m -> 1.5 cm; 0.5 m -> 2.8 cm. Fewer, larger matches accumulate less
+#       bias; 0.3 m is the smallest value in the good regime, so the map updates most often.
+#   coarse/fine_search_angle_offset, correlation_search_space_dimension, *_variance_penalty:
+#       tightened so the matcher can only make SMALL corrections to odometry.
+#   do_loop_closing: false        loop closure made every narrow-FOV configuration WORSE
+#       (map->odom jumps of 1.7-3.4 m). TODO(future): revisit with a wider FOV / noisy odometry.
+#
+# Simulated odometry is noise-free, so these numbers are the matcher's own error; real encoder
+# odometry will drift and the trade-off may move (TODO(hardware): re-measure on the robot).
+slam_toolbox:
+  ros__parameters:
+
+    # Plugin params
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ROS Parameters
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link   # this robot has base_link (the drive-axle midpoint), NOT base_footprint
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping #localization
+
+    # if you'd like to immediately start continuing a map at a given pose
+    # or at the dock, but they are mutually exclusive, if pose is given
+    # will use pose
+    #map_file_name: test_steve
+    # map_start_pose: [0.0, 0.0, 0.0]
+    #map_start_at_dock: true
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02 #if 0 never publishes odometry
+    map_update_interval: 1.0
+    resolution: 0.05
+    restamp_tf: false
+    min_laser_range: 0.0 #for rastering images
+    max_laser_range: 8.0   # arena diagonal 7.07 m; matches depth_to_scan.yaml range_max
+    minimum_time_interval: 0.1   # process scans at up to 10 Hz
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
+    enable_interactive_mode: false   # no RViz interaction plugin needed
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.3   # measured: see header
+    minimum_travel_heading: 3.1   # ROTATION-ONLY SCANS SKIPPED: see header
+    check_min_dist_and_heading_precisely: false
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 8.0
+    link_match_minimum_response_fine: 0.1  
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: false   # see header
+    loop_match_minimum_chain_size: 10           
+    loop_match_maximum_variance_coarse: 3.0  
+    loop_match_minimum_response_coarse: 0.35    
+    loop_match_minimum_response_fine: 0.45
+
+    # Correlation Parameters - Correlation Parameters
+    correlation_search_space_dimension: 0.2
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1 
+
+    # Correlation Parameters - Loop Closure Parameters
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # Scan Matcher Parameters
+    distance_variance_penalty: 0.2      
+    angle_variance_penalty: 0.2    
+
+    fine_search_angle_offset: 0.005     
+    coarse_search_angle_offset: 0.06   
+    coarse_angle_resolution: 0.0349        
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    min_pass_through: 2
+    occupancy_threshold: 0.1

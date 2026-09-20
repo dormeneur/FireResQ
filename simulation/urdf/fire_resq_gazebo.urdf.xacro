@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!--
+  SIMULATION wrapper around the reusable robot description.
+
+  This file exists so that fire_resq_description stays free of simulator concerns.
+  It includes the real robot unchanged and layers Gazebo-only content on top:
+  surface properties, visual materials and (from Phase 2) plugins and sensors.
+
+  Nothing here is used on the physical robot.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fire_resq">
+
+  <!-- Simulation contact model: single-point wheel contact, so the simulated track width
+       equals the configured wheel_separation. Must be declared BEFORE the include - the
+       first declaration of an xacro arg wins. See wheels.xacro. -->
+  <xacro:arg name="wheel_collision" default="sphere"/>
+
+  <!-- The reusable robot, imported as-is. -->
+  <xacro:include filename="$(find fire_resq_description)/urdf/fire_resq.urdf.xacro"/>
+
+  <!-- ================= Gazebo visual materials ================= -->
+  <gazebo reference="base_link">
+    <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <gazebo reference="left_wheel_link">
+    <material>Gazebo/Black</material>
+    <!-- Drive wheels need grip. -->
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+  </gazebo>
+
+  <gazebo reference="right_wheel_link">
+    <material>Gazebo/Black</material>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+  </gazebo>
+
+  <!--
+    Passive caster: near-frictionless so it slides instead of resisting turns.
+    This is a simulator surface property, which is why it lives here and not in
+    the description - a real caster gets its behaviour from its bearing.
+  -->
+  <gazebo reference="caster_link">
+    <material>Gazebo/Grey</material>
+    <mu1>0.01</mu1>
+    <mu2>0.01</mu2>
+  </gazebo>
+
+  <gazebo reference="camera_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <gazebo reference="magnet_link">
+    <material>Gazebo/Orange</material>
+  </gazebo>
+
+  <!-- ================= Gazebo systems ================= -->
+  <xacro:include filename="$(find fire_resq_simulation)/urdf/gz_drive.xacro"/>
+  <xacro:include filename="$(find fire_resq_simulation)/urdf/gz_sensors.xacro"/>
+
+  <!--
+    TODO(phase-9): detachable-joint wiring for the electromagnet on magnet_link.
+                   Deliberately absent: electromagnet behaviour belongs to the rescue
+                   mechanism phase and the magnet abstraction in fire_resq_control.
+  -->
+
+</robot>

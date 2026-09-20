@@ -1,0 +1,5 @@
+string victim_id
+uint8 new_status
+---
+bool success
+string message

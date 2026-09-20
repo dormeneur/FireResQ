@@ -99,6 +99,7 @@ Keep ROS-level interfaces stable. Replace underlying sensor/actuator drivers rat
 src/
 ├── fire_resq_interfaces/
 ├── fire_resq_description/
+├── fire_resq_navigation/
 ├── fire_resq_perception/
 ├── fire_resq_world_model/
 ├── fire_resq_cognition/
@@ -117,6 +118,8 @@ docs/
 ```
 
 `fire_resq_description` holds the reusable robot description (URDF/xacro) and robot model assets. It is independent of Gazebo-specific simulation logic so that both simulation and physical hardware bringup can depend on it.
+
+`fire_resq_navigation` holds the depth→scan pipeline, SLAM/localization and Nav2 configuration and launch files. It consumes only stable ROS interfaces (depth image, `odom`, TF, `/scan`) and exposes `/scan`, `/map`, `map→odom` and the Nav2 actions, so it is shared unchanged by simulation and hardware and the mapping/localization backend can be replaced without touching cognition. Layering: description → simulation → navigation → cognition.
 
 ## 10. Architecture TODOs
 - TODO: uncertainty propagation.

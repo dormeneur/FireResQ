@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!--
+  Electromagnet MOUNT only - geometry and frame, no actuation logic.
+
+  Hardware.md section 6: front-mounted, low-voltage, switched through a MOSFET/relay.
+  The ATTACH/RELEASE behaviour is a Phase 9 concern and lives behind the magnet
+  abstraction in fire_resq_control. Nothing in this file knows about GPIO, and
+  nothing in cognition knows about this file.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <link name="magnet_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="${magnet_radius}" length="${magnet_length}"/></geometry>
+      <material name="magnet_copper"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="${magnet_radius}" length="${magnet_length}"/></geometry>
+    </collision>
+    <xacro:cylinder_inertia m="${magnet_mass}" r="${magnet_radius}" h="${magnet_length}"/>
+  </link>
+
+  <joint name="magnet_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="magnet_link"/>
+    <origin xyz="${magnet_x} 0 ${magnet_z}" rpy="0 0 0"/>
+    <!-- TODO(hardware): physical electromagnet interface - MOSFET/relay wiring, coil
+         voltage, holding force and the resulting ALIGN standoff tolerance. -->
+  </joint>
+
+</robot>

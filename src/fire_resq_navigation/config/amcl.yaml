@@ -1,0 +1,45 @@
+# AMCL: localise against a SAVED map (scan-to-map), instead of building one.
+#
+# Why this exists next to SLAM Toolbox: scan-to-scan matching accumulates drift on the narrow
+# depth wedge (docs/Implementation_Plan.md, Phase 4). Matching each scan against a FIXED map does
+# not, and AMCL handled in-place rotation, which the SLAM preset has to skip. Probed at 60 deg:
+# 2-8 cm typical, one 60 cm transient after a U-turn facing a plain wall that a spin repaired.
+#
+# AMCL and SLAM Toolbox must NEVER run together: both publish map -> odom. nav_stack.launch.py
+# selects exactly one via `localization:=slam|amcl`, and a test asserts a single publisher.
+amcl:
+  ros__parameters:
+    base_frame_id: base_link            # the drive-axle midpoint, not base_footprint
+    odom_frame_id: odom
+    global_frame_id: map
+    scan_topic: scan
+    tf_broadcast: true
+    transform_tolerance: 1.0
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+    laser_model_type: likelihood_field
+    laser_min_range: 0.2
+    laser_max_range: 8.0
+    max_beams: 60
+    min_particles: 500
+    max_particles: 2000
+    # An update fires after 10 cm or ~6 deg of motion - including in-place rotation, which is what
+    # lets AMCL recover from a bad guess after turning to look at a different wall.
+    update_min_d: 0.1
+    update_min_a: 0.1
+    resample_interval: 1
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+    # Odometry noise model. Defaults are kept ON PURPOSE: simulated odometry is noise-free, but
+    # the hardware's will not be, and these also keep the particle cloud from collapsing.
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    # The start pose is supplied on /initialpose (RViz "2D Pose Estimate", or the mission start
+    # pose). Setting it as a parameter proved unreliable: it can be applied before odometry TF is
+    # available. TODO(mission): publish the known start pose (the map origin when the map was
+    # built from the start) at mission start.
+    set_initial_pose: false
+    always_reset_initial_pose: false
+    # TODO(hardware): retune for the real camera's noise and for real encoder odometry.

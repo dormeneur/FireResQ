@@ -163,7 +163,7 @@ map ──(SLAM)──> odom ──(wheel odometry)──> base_link ──(stat
                                                                           └─> camera_link ──> camera_optical_frame
 ```
 
-One publisher per edge, no exceptions. `camera_optical_frame` follows the REP-103 optical convention (z forward) and is where depth maths happens; `camera_link` is the mechanical mount. Getting this pair wrong is the single most common cause of detections landing in the wrong place, so Phase 3 verifies it explicitly.
+One publisher per edge, no exceptions. `camera_optical_frame` follows the REP-103 optical convention (z forward) and is where depth maths happens; `camera_link` is the mechanical mount. Getting this pair wrong is the single most common cause of detections landing in the wrong place, so Phase 2 verified it explicitly (back-projected known objects into `odom`; see Phase 2).
 
 ## 6. Simulation Plan
 
@@ -229,11 +229,11 @@ Confidence is the detector's own score, propagated unchanged. Fusing it with geo
 [real LiDAR, if ever]  → /scan ──────────────────┘
 ```
 
-Phase 4 delivers this as an explicitly parameterised choice (`localization_backend:=slam_toolbox|rtabmap`) with only the first implemented, so the second is a config addition rather than a refactor.
+Phase 4 delivers this as an explicit choice (`localization:=slam|amcl|none`, and `slam_preset:=scan_matching|odom_only`) with exactly one `map→odom` publisher enforced; RTAB-Map remains an unimplemented alternative behind the same `/scan`/`/map`/`map→odom` interface.
 
-### The honest caveat
+### The honest caveat (updated with Phase 4's measurements)
 
-A depth camera has a ~60–90° horizontal FOV against a LiDAR's 360°. The synthesised scan sees a narrow wedge, which means weak loop closure and a map that only fills in if the robot deliberately turns to look around. Mitigations, in order of preference: an initial in-place rotation during Phase 4 bring-up to seed the map; `slam_toolbox` tuned for a small arena (fine resolution, short range); and accepting that mapping needs an exploration pass before the rescue loop starts. **This is the strongest argument for RGB-D over RGB-only on the physical robot, and it is a hardware-dependent decision that stays open — see §16.**
+A depth camera has a ~60–90° horizontal FOV against a LiDAR's 360°, and the synthesised scan is a narrow wedge. This section originally proposed an initial in-place rotation to seed the map; **that was wrong**. Measured in Phase 4 (see Step 0 and the Phase 4 section): SLAM Toolbox ignores rotation-only motion by default (this robot pivots exactly about `base_link`), and when forced to match every scan it **diverges** on the wedge, at 60° and at 87°, even on noise-free odometry. What works is skipping rotation-only scans with a 0.3 m translation gate on an 87° camera — genuine scan-matching SLAM, but one that **maps only when the robot translates**. Loop closure made every narrow-FOV configuration worse and is off. Localizing against a saved map (AMCL) avoids the scan-to-scan drift and handles rotation. This is the strongest argument for RGB-D over RGB-only on the physical robot, and the camera choice and the hardware SLAM approach stay open (§16).
 
 ## 9. World Model Plan
 
@@ -367,7 +367,10 @@ A watchdog/failsafe is mandatory before any autonomous physical run ([../docs/Ha
 - **Done when:** a GUI Gazebo window renders and a bridged topic echoes.
 - **TODO:** confirm WSL2 GPU/software rendering is adequate for camera sensors — if `rgbd_camera` is unusably slow, this is the phase that must discover it.
 
-### Phase 1 — ROS 2 package skeleton
+### Phase 1 — ROS 2 package skeleton ✅ COMPLETE
+- **Result:** All nine packages build clean (~23 s from scratch) and are discoverable via `ros2 pkg list`. All 11 custom interfaces generate. Robot description launches standalone in RViz with a correct TF tree; `camera_optical_frame` verified against REP-103. Robot spawns in Gazebo. `colcon test` runs clean (0 tests — test files begin in Phase 5).
+- **Known Phase 1 gap (expected):** wheel-joint TF is absent under Gazebo because nothing publishes `/joint_states` yet; closed in Phase 2. The standalone `display.launch.py` path has complete TF via `joint_state_publisher`.
+- **Correction (found in Phase 2):** this phase originally reported the robot as "resting on its wheels at z=0.0327 m". That was wrong. The magnet cylinder's lowest point (−0.033 m) was below the wheel contact plane (−0.0325 m), so the robot rested on the magnet and caster while the wheels hovered; the 0.0327 rest height was `0.033 − 0.3 mm penetration`, not the wheel radius. Two further description faults surfaced at the same time (base_link not at the axle midpoint; flat-cylinder wheel contact). All three are fixed — see Phase 2. Lesson kept: a settling height that merely *looks* right is not evidence; Phase 2's tests compare against Gazebo ground truth.
 - **Goal:** All nine packages build, empty but wired.
 - **Creates:** the package tree from §4; every msg/srv/action from §5 in `fire_resq_interfaces`.
 - **Depends on:** Phase 0.
@@ -376,37 +379,145 @@ A watchdog/failsafe is mandatory before any autonomous physical run ([../docs/Ha
 - **Done when:** clean build from scratch and every custom type resolves.
 - **TODO:** revisit `Detection` for a covariance field when uncertainty propagation lands.
 
-### Phase 2 — Gazebo robot and arena
-- **Goal:** The robot spawns and drives.
-- **Creates:** `fire_resq_description` xacro (base, two wheels, caster, camera mount, magnet link); `simulation/worlds/rescue_arena.sdf`; victim/fire/safe-zone models; `simulation/launch/sim.launch.py`.
-- **Depends on:** Phase 1.
-- **Interfaces:** `/cmd_vel` in, `/odom` out, `/joint_states`, `/tf`.
-- **Verify:** `teleop_twist_keyboard` drives it; it rotates in place; the caster does not snag; RViz shows the model matching the sim.
-- **Done when:** [../docs/Simulation.md](Simulation.md) stage 1 passes — the robot moves via `/cmd_vel`.
-- **TODO:** inertia/friction values are placeholders until real chassis mass is known.
+### Phase 2 — Gazebo robot control and sensors ✅ COMPLETE
+> **Scope note.** As executed, Phase 2 is *drive + joint states + odometry + RGB/depth sensors*, with the arena deferred to Phase 3. This swaps what the original plan split between Phases 2 and 3; nothing was dropped, and the sensor/TF verification originally listed under Phase 3 was done here.
 
-### Phase 3 — Sensors + TF + odometry
-- **Goal:** Trustworthy sensing and frames.
-- **Creates:** camera + optional `rgbd_camera` sensors in the URDF; bridge config; `use_depth` launch arg.
-- **Depends on:** Phase 2.
-- **Interfaces:** `/camera/image_raw`, `/camera/camera_info`, depth pair, complete `odom`→`base_link`→`camera_optical_frame` chain.
-- **Verify:** `ros2 run tf2_tools view_frames` shows one publisher per edge and no gaps; images render in RViz; a known-position object back-projects to the right place; odometry after a 2 m drive and a 360° turn is within tolerance.
-- **Done when:** [../docs/Simulation.md](Simulation.md) stage 2 passes and the optical-frame convention is confirmed correct.
-- **TODO:** sensor noise is absent; add it before trusting any accuracy number.
+- **Goal:** The simulated robot is physically controllable and publishes the sensor interfaces that SLAM, navigation and perception will consume.
+- **Created:** `simulation/urdf/gz_drive.xacro` (DiffDrive + JointStatePublisher), `gz_sensors.xacro` (RGB camera + optional depth camera), `simulation/config/bridge_base.yaml` / `bridge_depth.yaml` / `sim.rviz`, `simulation/launch/sim.launch.py` (replaces `spawn_robot.launch.py`; adds bridge, sim time, `use_depth`, and a working `gui` switch).
+- **Gazebo systems:** `gz-sim-diff-drive-system`, `gz-sim-joint-state-publisher-system`, `gz-sim-sensors-system` (ogre2, in the world file). All stock — no custom workaround nodes.
+- **Interfaces:** `/cmd_vel` in; `/odom`, `/joint_states`, `/tf` (`odom→base_link`), `/clock`, `/camera/image_raw`, `/camera/camera_info`, and — when `use_depth:=true` — `/camera/depth/image_raw`, `/camera/depth/camera_info`. `use_depth:=false` removes the depth sensor, its bridge node and its topics entirely.
+- **Verified against Gazebo ground truth** (test-only reference read via the gz CLI, never on a ROS topic; test scripts were throwaway and are not in the repo):
 
-### Phase 4 — SLAM / localization
-- **Goal:** A map and a correct `map`→`odom` transform, LiDAR-free.
-- **Creates:** `depthimage_to_laserscan` + `slam_toolbox` config; `localization.launch.py` with `localization_backend`.
-- **Depends on:** Phase 3 (needs depth + TF).
-- **Interfaces:** `/scan`, `/map`, `map`→`odom`.
-- **Verify:** drive the arena and confirm walls appear in roughly correct geometry; revisit a spot and check drift; compare against bridged ground-truth pose.
-- **Done when:** stage 3 passes — a usable occupancy grid exists and localization holds over a full arena circuit.
-- **TODO:** narrow-FOV loop closure is the known weakness (§8); RTAB-Map remains the unimplemented alternative behind the same interface.
+| Check | Result |
+| --- | --- |
+| Rest state | axle z = 0.0325 m = wheel radius, roll/pitch 0.00°, zero drift over 8 s |
+| Forward / backward 0.2 m/s × 5 s | truth ±1.0000 m, odom ±1.0000 m |
+| Wheel joint angles | 30.769 rad for 1 m = 1/0.0325 exactly; ±4.132 rad for a 90° spin (kinematics from `parameters.xacro`) |
+| Spin ±1 rad/s × π/2 s | truth 90.53°, odom 90.53°; base_link displacement 0.0000 m |
+| Arc 0.2 m/s + 0.5 rad/s × 4 s | truth (0.3596 m, 114.59°) vs odom (0.3590 m, 114.59°) |
+| Speed limits | 1.0 m/s request → peak 0.300; 5 rad/s request → peak 1.500 |
+| Zero command | odom velocity 0.0000 |
+| TF | one root (`odom`), one parent per frame, 8 frames, no `map`; `odom→base_link` 50 Hz; wheels dynamic; REP-103 optical frame confirmed |
+| Sensor contract | RGB 640×480 `rgb8`, depth 640×480 `32FC1`; all four headers `camera_optical_frame`; K matches 60°/640 px analytically (fx 554.38); RGB and depth intrinsics identical |
+| Back-projection (pixel + depth + K + TF → `odom`) | red box **0.0 mm** from its surface, green sphere **1.2 mm**; left/right and height correct; an x-mirrored optical frame would miss by 776 mm (negative control) |
+| Rates (headless) | RGB ~23–26 Hz, depth ~22–25 Hz, `/odom` 50 Hz, `/joint_states` 250 Hz; RTF 1.00 |
+| `use_depth:=false` | no depth topics or bridge node; RGB 21 Hz; driving unaffected |
+
+- **Faults found and fixed** (all in the Phase 1 description; the motion tests against ground truth are what exposed them):
+  1. *Robot rested on the magnet, not its wheels.* Wheels hovered, could not drive the body, and wheel-derived odometry reported motion that never happened (odom said 1.39 m; truth said 0 m). Fixed: magnet raised (`magnet_z` −0.015 → 0.0, bottom now 14.5 mm clear); constraint documented in `parameters.xacro`.
+  2. *`base_link` was 4 cm behind the axle midpoint.* Differential-drive odometry reports the pose of the axle midpoint as `base_link`, so a spin produced ~5 cm of phantom motion. Fixed: `base_link` is now the axle midpoint (wheels at x = 0; chassis, caster, camera, magnet shifted by the same 4 cm). This is a hardware-relevant convention — the ESP32 odometry must publish the same point.
+  3. *Simulated robot over-rotated by 18%.* A flat-cylinder wheel collision turned about its inner edge (0.085 − 0.013 = 0.072 m; 0.085/0.072 = 1.181 vs the measured 1.180). Fixed: the sim wrapper selects a single-contact sphere collision through an xacro arg; the pure description keeps the faithful cylinder by default.
+- **Physics step 1 ms → 4 ms.** The stock joint-state plugin has no rate limit and publishes every step; at 1 ms that was a 1 kHz `/joint_states` costing ~40% of a core in the bridge. At 4 ms it is 250 Hz, bridge CPU roughly halved, and every test above was run at 4 ms.
+- **Finding for hardware:** Gazebo's DiffDrive holds the last `cmd_vel` indefinitely (measured: 0.200 m/s two seconds after the publisher exited). Sim-harmless, but it is precisely why the ESP32 needs a `cmd_vel` watchdog. Recorded as `TODO(hardware)` in `gz_drive.xacro`.
+- **TODOs (remain):** sensor noise models (renders are noise-free, so accuracy figures are optimistic); encoder quantisation (simulated odometry derives from continuous joint motion); real camera / RealSense integration; ESP32 communication; measured inertia, friction and motor limits; camera intrinsics are placeholders for a camera not yet chosen.
+
+### Phase 3 — Rescue arena and world ✅ COMPLETE
+- **Goal:** The 5 m × 5 m rescue environment the whole project operates in, launchable repeatably and deterministically, with the robot, sensors, TF and odometry unchanged.
+- **Created:**
+  - `simulation/fire_resq_simulation/scenario.py` — pure-Python scenario loader, validator and world generator (no ROS/Gazebo import); `simulation/config/scenarios/default.yaml`; `simulation/scripts/generate_world.py` (layout printer / world writer).
+  - `simulation/models/victim/` and `simulation/models/fire/` — the two reusable models. Walls, obstacles and the safe-zone slab are generated inline from the scenario.
+  - `simulation/launch/arena.launch.py` — generates the world, then includes `sim.launch.py` unchanged (so the robot is not forked or duplicated).
+  - `pytest.ini`, `tests/unit/` (39 tests), `tests/sim/` (29 tests + 2 slow).
+- **Arena:** 5.0 × 5.0 m inner free space, enclosed by four 0.10 m walls (0.5 m high). Robot starts inside a 1 × 1 m safe zone in the south-west corner facing north-east. One fire, three victims, a 1.4 m partition and two blocks. Coordinates and the design intent of each victim are in CLAUDE.md ("The rescue arena").
+- **Fire:** static emissive orange cone (embers + outer + inner flame) with a cylindrical collision column so the robot treats it as an obstacle. Replaceable: the scenario names the model, and only the colour/obstacle contract is relied on. No dynamic fire behaviour (TODO).
+- **Victims:** one reusable `victim` model, dynamic (0.22 kg, low centre of mass), blue torso + head, steel attachment ring on the bottom 55 mm at the electromagnet's height, single `base_link` and an `attachment_point` frame for Phase 9. Identity (`victim_1..3`) and pose come from the scenario only; all three look identical, like the physical victims.
+- **Safe zone:** 4 mm green floor slab, visual only, so the robot drives over it.
+- **No hardcoding:** placement exists only in the scenario YAML; unit-test guards assert robot code never reads it, never consumes Gazebo ground truth, and cognition/planning never import hardware (guards were confirmed to fail on an injected violation). No rescue order or path exists anywhere.
+- **Perception preparation (colour contract, measured):** victim hue 109–110 (S 149–159, V 100–205), fire hue 13–21 (S 255, V ≥ 236), safe zone hue 68 (S ~153, V 172–183); every other pixel has S ≤ 18. Classes are disjoint. Back-projected detections land on the real objects (see below).
+- **Verification (all automated in `tests/`):**
+
+| Check | Result |
+| --- | --- |
+| Arena loads | 15 entities present at their scenario poses (±2 mm); **0 `[Err]`** in the Gazebo log (pre-existing Ogre-material `[Wrn]` from the robot wrapper remain) |
+| Robot | spawns at the scenario pose inside the safe zone; axle z = wheel radius; all Phase 2 motion/odometry/TF/sensor checks re-run **inside the arena** and pass (10 robot tests, 9 sensor/TF tests) |
+| Victims / fire | rest at z ≈ 0, tilt < 1°, no drift after settling; fire static |
+| Visibility from the start | a full survey finds fire, `victim_1`, `victim_2` and **not** `victim_3` (hidden behind the partition, as designed); **every detection sits on a real object** — no phantoms |
+| Exploration | after driving round the partition (2.55 m + turn + 1.1 m, ±10 cm of plan, no tilt, odometry within 3% of truth) `victim_3` is found |
+| Safe zone | visible from inside it; depth-projected green pixels fall inside the zone rectangle and on the floor plane |
+| Launch modes | headless, GUI + RViz (RGB 22 Hz, depth 22.6 Hz with everything rendering), `use_depth:=false` (no depth topics or bridge) |
+| Determinism | two independent launches → identical world file (SHA-256), identical entity poses (±1 mm), and the same scripted drive ends within 1 cm / 0.5° |
+
+- **Findings that constrain later phases:**
+  1. **RGB and depth are separate sensors whose content is offset by ~40 ms** (~10 px at 0.4 rad/s even with matching timestamps). *Correction from Phase 4:* the depth stream — and the scan derived from it — is exactly time-aligned to the true pose (0.06 cm ray-cast error at +0 ms), so it is the **RGB** image that is offset. A single depth pixel at an RGB blob's centroid from a *moving* camera can land on the wall behind a thin object — the first survey produced phantom "victims" on the walls exactly this way. Phase 5 must look while stationary/slow, or use aligned depth with a robust depth over the blob's pixels. The tests use step-and-look.
+  2. **Depth is the stream that suffers under load** — see Environment.md.
+- **TODOs (remain):** scenario randomisation for Phase 11 (the YAML + validator already support generated layouts); fire is not dynamic; victim mass/ring geometry must match the real victims and magnet holding force; wall/obstacle appearance is not realistic by design; sensor noise still absent.
+
+### Phase 4 — Step 0 findings (measured; reproduce with `tests/sim/experiments/slam_fov_spike.py`)
+Before building Phase 4, a viability experiment ran SLAM Toolbox at the placeholder 60° depth FOV and at a RealSense-like 87°, on the arena, from one start pose over one route (three 360° spins, 2.55 m, turn, 1.1 m), scored against Gazebo ground truth. **The plan's original assumption — that SLAM Toolbox plus an initial in-place rotation would work — was wrong.**
+
+| Configuration | 60° final yaw / pos | 87° final yaw / pos | 87° map cells ≤10 cm from a real surface |
+| --- | --- | --- | --- |
+| A default-style matcher, every scan | 147° / 428 cm | 107° / 378 cm | ~25% |
+| B tight matcher, every scan | 64° / 226 cm | 41° / 138 cm | ~29% |
+| C default + loop closure | 61° / 543 cm (`map→odom` jump 343 cm) | 79° / 301 cm (jump 166 cm) | ~30% |
+| **E rotation-only scans skipped, default matcher** | 2.8° / 36 cm (jump 26 cm) | **0.3° / 13.6 cm (jump 6.8 cm)** | **100%** |
+| **F rotation-only scans skipped, tight matcher** | 1.1° / 15 cm (jump 48 cm) | **0.0° / 8.9 cm (jump 10.5 cm)** | **100%** |
+| D matching off (odometry only — **not SLAM**) | 0 / 0 | 0 / 0 | 100% |
+
+Findings:
+1. The depth→`/scan` pipeline is geometrically exact (median 0.09 cm vs a ray-cast of the true scenario at 60°, 0.17 cm at 87°) and time-aligned to the true pose (+0 ms). The SLAM problem is the scan matcher, not the scan.
+2. SLAM Toolbox gates scans on translation of `base_link`; this robot pivots exactly about `base_link`, so with default settings **in-place rotation adds nothing to the map**. Forcing `minimum_travel_distance: 0` integrates rotation — and then the matcher **diverges systematically on a narrow wedge** (yaw under-estimated every spin). Widening 60°→87° reduces but does not remove this.
+3. The divergence is specific to rotation-only motion (in config A the yaw error changes only during spins). **Skipping rotation-only scans** (translation gate, heading gate disabled) gives genuine scan-matching SLAM that works, and works well at 87°.
+4. Caveats, stated plainly: in-place spins do not map (the robot must translate to see new areas, and Nav2's spin recovery adds no map); one route, one start pose; simulated odometry is noise-free, so these errors are the matcher's own and hardware — with drifting encoder odometry and no IMU — will differ; run-to-run noise is about ±3 cm.
+5. **Mapping with trusted simulator odometry is not scan-matching SLAM.** It is kept only as a labelled baseline preset.
+6. Rejected/deferred alternatives: RTAB-Map (new dependency; the simulated arena is textureless, so visual odometry has nothing to track and ICP would face the same wedge degeneracy); an IMU (deferred by decision — encoder-only heading drift is recorded as a hardware risk); autonomous exploration (deferred to the rescue loop). AMCL against a saved map was probed at 60° (2–8 cm typical, one 60 cm transient) and is the Phase 4 localization option.
+
+**Lap tuning (14.8 m lap, 87°, translation-gated tight matcher; `slam_fov_spike.py lap|lap2`).** The first Step-0 preset (0.1 m translation gate) drifted on a longer route — 19.8 cm / 6.3° final, 87% of map cells within 10 cm. Varying the matcher on that lap:
+
+| Variant | Final pos / yaw | Worst waypoint | Cells ≤10 cm | Max `map→odom` jump |
+| --- | --- | --- | --- | --- |
+| gate 0.1 m (Step-0 preset) | 19.8 cm / +6.3° | 19.8 cm | 86.8% | 12.2 cm |
+| gate 0.2 m, no barycenter | 10.7 cm / +2.7° | 10.7 cm | 99.2% | 13.7 cm |
+| **gate 0.3 m** (3 runs) | **1.0 / 0.3 / 2.3 cm, ≤ +1.5°** | 2.6 / 3.6 / 4.8 cm | ≥ 99.1% | 7.8 cm |
+| gate 0.4 m | 1.5 cm / +2.0° | 2.4 cm | 100% | 7.3 cm |
+| gate 0.5 m | 2.8 cm / +0.9° | 2.8 cm | 100% | 7.8 cm |
+| tighter search (dim 0.1, penalties 0.1) | 88.8 cm / +23.9° | 88.8 cm | 40.9% | 23.6 cm |
+| scan buffer 3 | 33.8 cm / −3.1° | 33.8 cm | 60.9% | 39.8 cm |
+
+Larger gates accumulate less bias; 0.3 m is the smallest in the good regime and is the shipped preset. **Tighter is not monotonically better** — the very tight matcher and the small scan buffer were much worse. The spread across variants (1 cm to 89 cm) shows this behaviour is sensitive, which is why the shipped value was confirmed by three repeats and is re-checked by the mapping test on every run. Still noise-free odometry on a single route family, so hardware will differ.
+
+**Decision:** the navigation stack runs with an 87° depth camera and SLAM Toolbox with rotation-only scans skipped and a tightened matcher. The Phase 2–3 launch defaults stay 60° so their behaviour and tests are unchanged.
+
+### Phase 4 — SLAM, localization and Nav2 ✅ COMPLETE
+> **What "complete" means here, stated plainly.** The stack maps the arena with genuine scan-matching SLAM, localizes against a saved map with AMCL, and Nav2 drives to supplied goals. It does **not** run Nav2 concurrently with scan-matching SLAM reliably (a measured limitation, below), the results are on noise-free simulated odometry, and there is no autonomous exploration. The Step 0 findings above overturned the original plan (SLAM Toolbox + an in-place spin); this section records what was built instead.
+
+- **Goal:** `/scan`, `/map` and `map→odom` from depth alone (no LiDAR), and Nav2 navigation to goals — behind interfaces that hardware and any replacement backend keep.
+- **Created:** package `fire_resq_navigation` (Architecture.md §9 amended): `scan.launch.py` (depth→`/scan`), `mapping.launch.py` (SLAM Toolbox, presets `scan_matching` and `odom_only`), `localization.launch.py` (map_server + AMCL), `navigation.launch.py` (controller, planner, behaviours, BT navigator, lifecycle manager), `nav_stack.launch.py` (composes them; `localization:=slam|amcl|none` — exactly one `map→odom` publisher, invalid combinations rejected), `robot_params.py` / `nav2_params.py` (footprint and limits derived from `parameters.xacro`, never restated), `rviz/navigation.rviz`. `simulation/launch/arena_nav.launch.py` composes it with the arena; `camera_hfov` became a launch argument (default unchanged at 60°; the navigation launch uses 87°).
+- **Architecture decisions (each measured):**
+  1. **87° depth camera** in the navigation configuration (a RealSense-like FOV); Phase 2–3 launches stay 60°.
+  2. **SLAM Toolbox, scan-matching preset:** rotation-only scans skipped, 0.3 m translation gate, tightened matcher, no loop closure (tuning table above).
+  3. **Mapped-arena mode:** map with SLAM, save, then **AMCL** on the saved map for navigation. AMCL handles in-place rotation and Nav2's arcs; scan-matching SLAM does not (see the limitation).
+  4. **Nav2 composed from four servers**, Regulated Pure Pursuit + NavFn, behaviours `spin`/`wait` only, a BT that replans only when the path becomes invalid. No BackUp/reversing/recovery: the robot cannot see behind itself.
+  5. **Rolling 10 × 10 m global costmap** and **circular** costmap footprint (two integration failures found and fixed, below).
+- **Tests added** (all reuse `run_sim`/`Bot`): unit — `test_robot_params`, `test_nav2_params`, `test_nav_config`, scenario ray-cast/nearest-surface helpers; sim — `test_nav_scan` (12), `test_nav_mapping` (8), `test_nav_localization` (5), `test_nav2` (9 + 1 xfail). The Phase 1–3 tests are unchanged and pass.
+- **Verification results** (ground truth = Gazebo pose and the scenario geometry):
+
+| Requirement | Result |
+| --- | --- |
+| Depth image exists; `/scan` valid | depth 32FC1 at the 87° intrinsics; `/scan` 640 beams, 86.9°, `camera_link`, ≥ 15 Hz; **median ray-cast error < 1 cm and p95 < 5 cm from four headings**, no phantom floor returns; scan stamps equal depth stamps |
+| TF has no conflicting publishers | one parent per frame; `map→odom` published by exactly one node (`slam_toolbox` or `amcl`), asserted for each |
+| SLAM produces a map; `map` frame exists | `/map` at 0.05 m from the first scan; SLAM Toolbox lifecycle `active` |
+| SLAM localizes | 14.8 m mapping lap: over two full test runs the worst waypoint error was **4.1 and 3.5 cm**, the final error 1.7 and 3.5 cm, yaw ≤ 1.8°; largest single `map→odom` step 7.3 and 10.0 cm (≤ 1.6°). Across the tuning repeats at this setting, final error 0.3–2.3 cm |
+| Map quality | **100% of occupied cells within 10 cm** of a real surface (both runs), 76% and 92% within 5 cm, median 2.5 cm (~730 cells); **97% of the true wall length mapped**; 24.5–24.6 m² of the 25 m² arena known |
+| Localization against the saved map | on the saved map, from the mission start pose: **3.0 and 2.5 cm** (≤ 0.3°); on a *different* route with in-place spins: median **5.4 and 1.7 cm**, worst **9.7 and 7.2 cm**, yaw ≤ 2.5° (the SLAM preset would skip those spins; AMCL handles them) |
+| Nav2 lifecycle active; goal accepted; robot moves toward it; completes within tolerance | four servers `active`; under AMCL on the saved map, three goals, identical in two full runs: **G1 succeeded in 9.2–9.3 s** (13 cm from the goal in the real world), **G2 — a detour round obstacle_2 — in 15.5–16.1 s** (9 cm from goal, ≥ 48 cm clear of the obstacle), **G3 home in 16.6–16.7 s** (16 and 8 cm); all ≤ the 25 cm test tolerance, which is Nav2's 10 cm goal tolerance plus localization error; robot upright and on its wheels throughout. SLAM and AMCL are non-deterministic, so figures vary run to run |
+| No hardcoded scenario coordinates in navigation/cognition | unit guards: nothing under `src/` (now including `fire_resq_navigation`) reads the scenario or Gazebo ground truth |
+| Existing Phase 1–3 tests | all pass unchanged |
+
+- **Performance** (headless, D3D12; `nav_performance.py`; detail in Environment.md): real-time factor **1.00** throughout; depth 15–18 Hz, `/scan` 16–18.5 Hz, `/map` updates every 1.0 s; whole stack **1.7 cores** (Gazebo 0.9, bridges 0.3, SLAM + Nav2 + scan < 0.6); Nav2 drove a detour goal in 14–16 s.
+- **Integration failures found and fixed** (each was diagnosed from logs and data, not guessed):
+  1. *Nav2 aborted every goal in 0.03 s:* `Start Coordinates … was outside bounds`. The SLAM map covers only what has been seen, and the robot's own position was just outside it, so a map-sized global costmap did not contain the robot. Fixed: rolling 10 × 10 m global costmap.
+  2. *Controller aborted with "collision ahead":* the planner plans for a point and the controller checks the footprint; with wheels protruding (9.8 cm) past the inscribed radius (7.5 cm) they disagreed. Fixed: a circle at the circumscribed radius (derived from the description). Slightly conservative; a tighter polygon is a TODO for the victim approach.
+  3. *Stock SLAM Toolbox/Nav2 defaults were wrong for this robot* (`base_footprint` frame, 0.7 m inflation, TurtleBot MPPI controller, ten servers): all replaced explicitly, with unit tests that fail if they return.
+  4. *Test-infrastructure bugs, also real:* the stray-process guard matched its own launcher command line and a script name; `use_rviz` leaked from `arena_nav.launch.py` into the arena launch and opened two RViz windows (launch arguments are global across included files).
+- **KNOWN LIMITATION — Nav2 concurrent with scan-matching SLAM.** With SLAM Toolbox localizing and Nav2 driving, the pose stayed within 2 cm through Nav2's in-place rotation, then jumped **+44° in a single step** at the first scan processed after it (2.2 cm → 16 cm, growing linearly afterwards). Odometry matched ground truth to < 0.4 cm / 1.1° and no victim moved, so it is SLAM's correction, not physics or a collision. The identical goals all succeed with odometry-only mapping (8, 17, 18 s), which isolates it from the Nav2 configuration. The mechanism is not fully understood (a 44° step is outside the matcher's search window). Recorded as an `xfail` (non-strict) that will announce a fix; `tests/sim/experiments/nav2_localization_diag.py` reproduces it. Mitigation: navigate under AMCL on a saved map.
+- **Other limitations:** in-place spins add nothing to the SLAM map (asserted); tuning evidence is one route family on noise-free odometry, so hardware will differ; the Nav2 goal tolerance (10 cm) and the AMCL/SLAM errors add; goals inside a victim's inflation radius will be rejected by Nav2 — relevant to the Phase 8–10 approach; unknown space is plannable (`allow_unknown`) because nothing explores yet.
+- **TODOs (explicit in code and docs):** sensor and odometry noise so SLAM/AMCL are measured under realistic error; encoder-only heading drift on hardware (Hardware.md TODO; IMU deferred, not required); RGB-only visual-SLAM alternative; RealSense integration and validation of the depth-derived scan; better loop closure; dynamic environments; recovery from failed navigation; autonomous exploration (rescue loop); decoupled RGB/depth FOV once the camera is chosen; publish the mission start pose to AMCL automatically.
 
 ### Phase 5 — Perception
 - **Goal:** Victims and fire detected and placed in `map`.
 - **Creates:** `Detector` ABC + `ColorBlobDetector`; `SpatialEstimator` ABC + `GroundPlaneEstimator` and `DepthEstimator`; the two nodes.
-- **Depends on:** Phase 3 (Phase 4 not strictly required — positions can be checked in `odom` first).
+- **Depends on:** Phase 2 (sensors) and Phase 3 (victims and fire to detect); Phase 4 not strictly required — positions can be checked in `odom` first. **Must respect** the RGB/depth lag (Phase 3 finding 1): fuse only while stationary/slow, and take depth robustly over the blob's pixels, not at one pixel.
 - **Interfaces:** `/fire_resq/detections`.
 - **Verify:** unit tests on synthetic images; compare estimated victim positions against sim ground truth (target: within a few centimetres with depth); **run both estimators on the same scene and confirm consumers need no changes.**
 - **Done when:** stage 4 passes and the RGB/RGB-D swap is demonstrated, not just designed.
@@ -486,6 +597,8 @@ Three tiers, cheapest first:
 2. **Node-level integration (`launch_testing`).** Publish synthetic detections, assert `WorldState`; stub a world model, assert the FSM's transition sequence. No Gazebo, so these can gate commits.
 3. **Full-stack simulation runs (headless `gz sim`).** The Phase 10 acceptance run and Phase 11 trials. Slow, non-deterministic, run deliberately rather than on every change.
 
+**Status (Phase 3):** tiers 1 and 3 exist for the simulation layer. `tests/unit/` (scenario validation/generation, geometry, architecture guards; ~0.2 s) and `tests/sim/` (each module launches its own headless simulation, in its own process group, and judges the robot against Gazebo ground truth; ~5 min fast, ~8 min with the slow RGB-only and determinism tests). Commands are in CLAUDE.md. Two corrections to the paragraph above: scenario startup *is* deterministic (verified: identical world, poses and scripted-drive outcome across launches), so it is the perception/timing-dependent behaviour that varies; and the ground-truth guard is now enforced by `tests/unit/test_architecture_guards.py` rather than left as an intention. Tier 2 (`launch_testing`, node-level) begins when there are nodes to test (Phase 5).
+
 Per-phase verification is specified in §13 and is the real gate — a phase is not done because code exists but because its check passed. Two invariants get permanent guard tests: no cognitive module imports `fire_resq_hardware`, and no cognitive module subscribes to ground-truth pose.
 
 ## 15. Evaluation Strategy
@@ -522,12 +635,16 @@ None of these blocks Phases 0–11, which is the point of putting them behind in
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
-| Narrow-FOV scan gives poor loop closure and patchy maps (§8) | **High** — the most likely phase to overrun | Initial rotation to seed the map; tune for a small arena; accept an exploration pass; RTAB-Map as the fallback behind the same interface |
+| Narrow-FOV scan-matching SLAM diverges (§8) | **High — realised in Phase 4, then mitigated** | Skip rotation-only scans, 0.3 m translation gate, 87° camera, no loop closure; AMCL on a saved map for navigation. Residual: noise-free odometry flattered the numbers; hardware will differ |
+| Nav2 concurrent with scan-matching SLAM injects a heading jump | **Medium — measured, not fixed** | Navigate under AMCL on a saved map; xfail test records it; diagnostic script reproduces it |
+| Encoder-only heading drift on hardware (no IMU) | Medium — unmeasured | Recorded as a Hardware.md TODO; IMU deliberately deferred and not required; measure on the real robot first |
+| The robot is blind behind itself (forward-only depth wedge) | Medium | No reversing/BackUp anywhere; recovery from failed navigation is a later TODO that needs a sensing answer first |
 | WSL2 rendering too slow for camera/depth sensors | Medium — would slow every later phase | Discovered in Phase 0 deliberately; fall back to reduced resolution/rate or headless |
 | Spatial estimation error exceeds magnet alignment tolerance | Medium | Depth estimator preferred; measure in Phase 5 before the FSM depends on it; TODO for closed-loop visual align |
 | Open-loop `ALIGN` unreliable in sim physics | Medium | Keep standoff generous; confirm attach via `MagnetState` rather than assuming success |
 | Colour-blob detection is brittle on real cameras (lighting) | Low in sim, **high on hardware** | Accepted MVP tradeoff behind the `Detector` interface; `YoloDetector` is the hardware answer |
 | `detachable-joint` re-attach semantics differ from expectation | Low | `attach_topic` support confirmed present in 8.15.0; Phase 9 tests it standalone before integration |
+| RGB/depth content lag (~40 ms) corrupts fused positions from a moving camera | Medium — found in Phase 3 | Perception processes while stationary/slow or compensates; robust depth over the blob mask; on hardware prefer aligned depth. Tests use step-and-look |
 | Scope creep from §17 into the MVP | Medium | TODOs live at their attachment points; phase definitions-of-done are the gate |
 
 ## 17. Future TODOs
@@ -550,7 +667,7 @@ Not MVP scope. Each lives as an explicit `TODO` at the code location where it wo
 
 ## Recommended Starting Point
 
-> **Status: Phase 0 complete.** The next task is Phase 1 (ROS 2 package skeleton). The original reasoning is kept below for the record.
+> **Status: Phases 0–4 complete.** The next task is Phase 5 (perception). The original Phase 0 reasoning is kept below for the record.
 
 **Phase 0, and specifically: verify that Gazebo Harmonic renders camera and RGB-D sensors at usable frame rates under WSL2.**
 

@@ -1,0 +1,5 @@
+# Ask cognition for the next victim, computed from the CURRENT world model.
+---
+RescueTarget target
+bool found
+string reason

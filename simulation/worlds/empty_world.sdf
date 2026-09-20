@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+<!--
+  Minimal world for Phase 1: enough to prove the robot spawns and settles.
+  The real 5 m x 5 m rescue arena (walls, fire, three victims, obstacles, safe zone)
+  is Phase 2 and will live alongside this file.
+-->
+<sdf version="1.9">
+  <world name="empty_world">
+
+    <!-- 4 ms step (250 Hz). Not arbitrary: Gazebo's stock JointStatePublisher has no rate
+         limit and publishes every physics step, so 1 ms meant a 1 kHz /joint_states stream
+         that cost ~40% of a core in the ROS bridge alone. 250 Hz is still far above any
+         encoder-driven publisher on hardware. Stability was verified at this step size
+         (docs/Implementation_Plan.md Phase 2). -->
+    <physics name="4ms" type="ignored">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <!-- Required for any camera/depth sensor to render. ogre2 is the engine verified in
+         Phase 0 (docs/Environment.md). -->
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material>
+            <ambient>0.4 0.4 0.4 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

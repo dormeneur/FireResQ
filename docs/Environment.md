@@ -122,6 +122,45 @@ Software rendering remains a working fallback if the D3D12 path breaks after a d
 - `vulkaninfo` is unavailable; the Vulkan render path was not tested.
 - Measurements come from a two-sensor scene. Re-measure once the full arena, robot, SLAM, and Nav2 are running — Phase 4 is the natural checkpoint.
 
+## 6a. Phase 2 measurements — full robot + both sensors
+
+Re-measured with the real robot, differential drive, joint-state publisher, RGB + depth cameras (640×480, 30 Hz requested) and the ROS bridge, on the D3D12/NVIDIA path. Supersedes the two-sensor probe in §4 for planning purposes. Single samples, ±2–3 Hz.
+
+| Topic | Headless | GUI + RViz also running |
+| --- | --- | --- |
+| `/camera/image_raw` | 23–26 Hz | 26 Hz |
+| `/camera/depth/image_raw` | 22–25 Hz | 17 Hz |
+| `/odom` | 50 Hz | 50 Hz |
+| `/joint_states` | 250 Hz | 250 Hz |
+| Real-time factor | 1.00 | 1.00 |
+
+- **Depth is the stream that suffers under load.** With the Gazebo GUI and RViz rendering alongside, depth dropped to ~17 Hz in the empty world; in the Phase 3 arena (GUI + RViz) it measured ~22.6 Hz with RGB ~22 Hz — run-to-run variation is real, so treat 17–25 Hz as the range. Watch it in Phase 4 when SLAM consumes it via `depthimage_to_laserscan`. Use `gui:=false` for automated runs.
+- **RGB and depth are unsynchronised:** ~40 ms constant content offset, ~10 px at 0.4 rad/s even with matching timestamps (Phase 3). Depth is exactly time-aligned to the true pose (Phase 4), so it is the RGB image that is late. See CLAUDE.md / Implementation_Plan.md.
+- **Physics step is 4 ms, not 1 ms.** The stock Gazebo joint-state publisher has no rate limit; at 1 ms it emitted 1 kHz and the ROS bridge burned ~40% of a core forwarding it. At 4 ms: 250 Hz, bridge ~20%.
+- Headless CPU with the robot idle (one `top` sample): gz server ~73–100%, bridges ~18% + ~9%, `robot_state_publisher` ~10%.
+- **No new dependencies** were needed for Phase 2. `teleop_twist_keyboard` is installed.
+
+## 6b. Phase 4 measurements — full navigation stack
+
+Arena + 87° RGB and depth cameras + `depthimage_to_laserscan` + SLAM Toolbox + Nav2 (controller, planner, behaviours, BT navigator), headless, D3D12/NVIDIA. Measured with `tests/sim/experiments/nav_performance.py` (single ~15–20 s windows; SLAM run in the odometry-only preset, whose cost is the same order as scan-matching's ~0.05 core when gated).
+
+| | Idle (robot stationary) | Nav2 driving a detour goal |
+| --- | --- | --- |
+| `/camera/depth/image_raw` | 15.2 Hz | 18.2 Hz |
+| `/scan` | 16.0 Hz | 18.5 Hz |
+| `/camera/image_raw` | 27.2 Hz | 25.7 Hz |
+| `/odom`, `/joint_states` | 50 / 250 Hz | 50 / 249 Hz |
+| `/map` update | every 1.0 s | every 1.0 s |
+| Real-time factor | 1.00 | 1.00 |
+| CPU, whole stack | 1.70 cores | 1.67 cores |
+
+CPU by process (cores): Gazebo server 0.90, ros_gz bridges 0.30, depth→scan 0.05, SLAM Toolbox 0.05–0.14, controller/planner/BT/behaviour servers 0.05–0.10 each, robot_state_publisher 0.05–0.07.
+
+- **`/scan` is depth-limited.** The scan is one message per depth frame, so it runs at the depth rate (15–18 Hz here versus 22–25 Hz for the 60° camera with less else running). Nothing in Phase 4 needs more; `test_scan_rate` requires ≥ 15 Hz.
+- **No new dependencies.** SLAM Toolbox 2.8.5, Nav2 1.3.13 and `depthimage_to_laserscan` 2.5.1 were already installed; `rtabmap_slam` remains absent and unneeded.
+- **RViz** (`fire_resq_navigation/rviz/navigation.rviz`) starts cleanly (one instance; standalone under D3D12, llvmpipe and forced-software GL: 0 errors), every displayed topic carries data in the right frame (`/scan` in `camera_link`; `/map` and the global costmap in `map`; the local costmap and footprint in `odom`), `/plan` carries the path, and a goal published on `/goal_pose` — what the "2D Goal Pose" tool sends — drives the robot. **Not verified visually:** once the Map display is created RViz logs `[ERROR] rviz/glsl120/indexed_8bit_image ... GLSL link result :` (empty). Screen capture is unavailable under WSLg (`X get_image` fails), so whether the map layer renders could not be confirmed by eye. If the map layer is blank, try `LIBGL_ALWAYS_SOFTWARE=1 ros2 launch ... use_rviz:=true`. (An earlier double-RViz launch-argument leak was a separate bug and is fixed and guarded by a unit test.)
+- **Nav2 and SLAM need the sim clock.** Everything in the stack runs with `use_sim_time:=true`; `arena_nav.launch.py` sets it.
+
 ## 7. How to re-verify
 
 ```bash

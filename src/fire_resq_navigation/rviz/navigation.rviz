@@ -1,0 +1,98 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Enabled: true
+      Name: Grid
+      Cell Size: 0.5
+      Plane Cell Count: 24
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Map (SLAM / saved)
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 0.7
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Global costmap
+      Topic:
+        Value: /global_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Alpha: 0.35
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Local costmap
+      Topic:
+        Value: /local_costmap/costmap
+        Durability Policy: Transient Local
+      Color Scheme: costmap
+      Alpha: 0.5
+    - Class: rviz_default_plugins/LaserScan
+      Enabled: true
+      Name: Scan (depth-derived)
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+      Size (m): 0.05
+      Color: 255; 0; 0
+      Style: Points
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Planned path
+      Topic:
+        Value: /plan
+      Color: 25; 255; 0
+    - Class: rviz_default_plugins/Polygon
+      Enabled: true
+      Name: Footprint
+      Topic:
+        Value: /local_costmap/published_footprint
+      Color: 255; 255; 0
+    - Class: rviz_default_plugins/RobotModel
+      Enabled: true
+      Name: RobotModel
+      Description Topic:
+        Value: /robot_description
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF (map, odom, base_link, camera)
+      Marker Scale: 0.3
+      Show Names: true
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Name: Depth image
+      Topic:
+        Value: /camera/depth/image_raw
+        Reliability Policy: Best Effort
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Name: RGB image
+      Topic:
+        Value: /camera/image_raw
+        Reliability Policy: Best Effort
+  Global Options:
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Scale: 90
+      X: 0
+      Y: 0
+Window Geometry:
+  Height: 950
+  Width: 1500

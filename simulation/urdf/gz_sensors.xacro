@@ -1,0 +1,94 @@
+<?xml version="1.0"?>
+<!--
+  Gazebo camera sensors, attached to the camera mount defined in the description.
+
+  SIMULATION ONLY. The mount (camera_link) and optical frame (camera_optical_frame) are
+  in fire_resq_description and are shared with hardware; this file only supplies the
+  simulated device that plugs into them. On the physical robot a camera driver takes
+  this file's place and publishes the same topics into the same frames.
+
+  Topic contract (Implementation_Plan.md section 5) - what perception will consume:
+    /camera/image_raw            sensor_msgs/Image        RGB
+    /camera/camera_info          sensor_msgs/CameraInfo
+    /camera/depth/image_raw      sensor_msgs/Image        32FC1, metres   [use_depth]
+    /camera/depth/camera_info    sensor_msgs/CameraInfo                   [use_depth]
+
+  RGB and depth are SEPARATE sensors with identical pose, resolution and FOV, so their
+  pixels align. That mirrors how a RealSense exposes colour and depth streams, and it is
+  what lets perception treat depth as an optional add-on: with use_depth:=false the RGB
+  topics are unchanged and the depth topics simply do not exist.
+
+  Header frame_id is camera_optical_frame (REP-103: z forward, x right, y down), because
+  that is the convention pixel/depth projection produces. The Gazebo sensor itself looks
+  along +x of camera_link, which is why it is mounted there and labelled with the
+  optical frame via gz_frame_id.
+
+  TODO(hardware): everything below is a stand-in for a camera not yet chosen. FOV,
+                  resolution, rate, clip range and mounting come from the real device
+                  (RGB USB vs RealSense - open decision, Implementation_Plan.md section 16).
+  TODO(phase-3+): sensor noise models. Simulated images are noise-free, so any accuracy
+                  figure measured now is optimistic.
+  TODO(hardware): real camera integration; RealSense integration and validation.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="use_depth" default="true"/>
+
+  <xacro:property name="cam_width"       value="640"/>
+  <xacro:property name="cam_height"      value="480"/>
+  <!-- Horizontal FOV, radians. An ARGUMENT, because it is a hardware-dependent decision (the
+       camera is not chosen: Intel RealSense depth is ~87 deg, a USB webcam ~60-70) and it
+       materially changes what SLAM can do - see docs/Implementation_Plan.md Phase 4.
+       RGB and depth share it in simulation so their pixels align; a real RealSense's colour
+       and depth FOVs differ. Launch with camera_hfov:=<radians>. -->
+  <xacro:arg name="camera_hfov" default="1.047"/>                <!-- 60 deg -->
+  <xacro:property name="cam_hfov"        value="$(arg camera_hfov)"/>
+  <xacro:property name="cam_update_rate" value="30"/>
+  <xacro:property name="cam_clip_near"   value="0.10"/>
+  <xacro:property name="cam_clip_far"    value="10.0"/>
+
+  <gazebo reference="camera_link">
+
+    <sensor name="rgb_camera" type="camera">
+      <always_on>true</always_on>
+      <update_rate>${cam_update_rate}</update_rate>
+      <topic>camera/image_raw</topic>
+      <gz_frame_id>camera_optical_frame</gz_frame_id>
+      <camera>
+        <horizontal_fov>${cam_hfov}</horizontal_fov>
+        <image>
+          <width>${cam_width}</width>
+          <height>${cam_height}</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>${cam_clip_near}</near>
+          <far>${cam_clip_far}</far>
+        </clip>
+      </camera>
+    </sensor>
+
+    <xacro:if value="$(arg use_depth)">
+      <sensor name="depth_camera" type="depth_camera">
+        <always_on>true</always_on>
+        <update_rate>${cam_update_rate}</update_rate>
+        <topic>camera/depth/image_raw</topic>
+        <gz_frame_id>camera_optical_frame</gz_frame_id>
+        <camera>
+          <horizontal_fov>${cam_hfov}</horizontal_fov>
+          <image>
+            <width>${cam_width}</width>
+            <height>${cam_height}</height>
+            <format>R_FLOAT32</format>
+          </image>
+          <clip>
+            <near>${cam_clip_near}</near>
+            <far>${cam_clip_far}</far>
+          </clip>
+        </camera>
+      </sensor>
+    </xacro:if>
+
+  </gazebo>
+
+</robot>

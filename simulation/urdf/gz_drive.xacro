@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<!--
+  Gazebo drive train: differential drive, wheel joint states, odometry.
+
+  SIMULATION ONLY. Every geometric and limit value comes from
+  fire_resq_description/urdf/parameters.xacro - nothing is restated here, so the
+  simulated robot and the physical robot cannot drift apart on wheel geometry.
+
+  ROS-level interface this provides (identical on hardware, Hardware.md section 8):
+    /cmd_vel        geometry_msgs/Twist      in
+    /odom           nav_msgs/Odometry        out   frame odom -> base_link
+    /joint_states   sensor_msgs/JointState   out   left/right wheel joints
+    /tf             odom -> base_link
+  The hardware replacement for this whole file is fire_resq_hardware's ESP32 bridge:
+  cmd_vel -> motor PWM, encoder ticks -> odometry + joint states.
+
+  TODO(hardware): motor driver - the TB6612FNG PWM/direction mapping lives in ESP32
+                  firmware (Phase 12), never here.
+  TODO(hardware): encoder interface - simulated odometry is derived from wheel joint
+                  motion. Real odometry comes from quantised ticks (encoder_ticks_per_rev
+                  in parameters.xacro) and will be noisier and drift.
+  TODO(hardware): ESP32 <-> ROS 2 communication transport.
+  TODO(hardware): cmd_vel WATCHDOG. Gazebo's DiffDrive holds the LAST command indefinitely -
+                  a publisher that dies leaves the robot driving at its last velocity
+                  (measured in Phase 2). Harmless in simulation, unsafe on hardware: the
+                  ESP32 firmware must zero the motors when cmd_vel goes silent. This is the
+                  watchdog Hardware.md and Hardware_Integration.md already require before
+                  any autonomous physical test.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <gazebo>
+
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>left_wheel_joint</left_joint>
+      <right_joint>right_wheel_joint</right_joint>
+      <wheel_separation>${wheel_separation}</wheel_separation>
+      <wheel_radius>${wheel_radius}</wheel_radius>
+
+      <!-- Gazebo-side topic names deliberately equal the ROS names. -->
+      <topic>cmd_vel</topic>
+      <odom_topic>odom</odom_topic>
+      <tf_topic>tf</tf_topic>
+      <odom_publish_frequency>50</odom_publish_frequency>
+
+      <!-- Architecture.md section 5: odom -> base_link. Without these the plugin
+           invents model-scoped names and TF silently fails to connect. -->
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_link</child_frame_id>
+
+      <max_linear_velocity>${max_linear_velocity}</max_linear_velocity>
+      <min_linear_velocity>${-max_linear_velocity}</min_linear_velocity>
+      <max_angular_velocity>${max_angular_velocity}</max_angular_velocity>
+      <min_angular_velocity>${-max_angular_velocity}</min_angular_velocity>
+      <max_linear_acceleration>${max_linear_acceleration}</max_linear_acceleration>
+      <min_linear_acceleration>${-max_linear_acceleration}</min_linear_acceleration>
+      <max_angular_acceleration>${max_angular_acceleration}</max_angular_acceleration>
+      <min_angular_acceleration>${-max_angular_acceleration}</min_angular_acceleration>
+    </plugin>
+
+    <!-- Stock Gazebo joint-state publisher: the simulated stand-in for encoder readings.
+         Only the two continuous wheel joints exist as joints after fixed-joint
+         reduction, so nothing else needs filtering. -->
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+      <topic>joint_states</topic>
+    </plugin>
+
+  </gazebo>
+
+</robot>
