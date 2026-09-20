@@ -1,0 +1,33 @@
+# FireResQ world model parameters. Frames are the stable ROS interface; nothing here is per-victim.
+world_model_node:
+  ros__parameters:
+    # ---- interface -----------------------------------------------------------------------------
+    detections_topic: /fire_resq/detections
+    world_state_topic: /fire_resq/world_state
+    markers_topic: /fire_resq/world_markers
+    update_status_service: /fire_resq/update_victim_status
+    world_frame: map                       # WorldState is expressed here; detections in other frames are transformed via TF
+    base_frame: base_link
+    publish_rate_hz: 5.0
+
+    # ---- association and smoothing (Implementation_Plan.md section 9) --------------------------
+    victim_gate_m: 0.3                     # must stay below the victim spacing the scenario validator enforces (0.5 m)
+    fire_gate_m: 0.5                       # one fire is tracked; a detection further than this from it is ignored
+    position_alpha: 0.3                    # EMA weight of a new observation. A placeholder for a filter (TODO in __init__)
+    min_confidence: 0.2                    # the same floor perception uses. Detector confidence is a pixel-count proxy, so a victim
+                                           # ~5 m away reads ~0.3; a higher floor here would make far victims impossible to create.
+                                           # Ghosts are filtered by confirm_hits, not by confidence.
+    confirm_hits: 2                        # observations before a track leaves UNKNOWN (1 = trust the first)
+    tentative_timeout_s: 5.0               # an unconfirmed track older than this is a ghost and is dropped
+    confidence_decay_tau_s: 30.0           # stale entities lose standing: confidence * exp(-unseen / tau)
+
+    # ---- the safe zone: KNOWN INFRASTRUCTURE, configured, never discovered ----------------------
+    # Expressed in the world frame. `map` starts at the mission start pose, which is inside the safe zone, so
+    # this is "where the safe zone is relative to where the robot started" - the operator's setup, like the AMCL
+    # start pose. A victim DETECTED inside it is one already carried there and never becomes a new candidate.
+    # A test compares these numbers with the simulation scenario, so a changed scenario cannot silently drift from them.
+    safe_zone.x: 0.0
+    safe_zone.y: 0.0
+    safe_zone.yaw: -0.7853981633974483     # the arena's safe zone is axis-aligned in the WORLD; map is rotated by the start yaw
+    safe_zone.size_x: 1.0
+    safe_zone.size_y: 1.0

@@ -251,6 +251,8 @@ Publishes `WorldState` at a modest fixed rate (~5 Hz) plus RViz markers for ever
 
 Deliberate omissions, as TODOs: no occupancy/obstacle memory beyond the SLAM grid, no negative evidence ("I looked and saw nothing"), no probabilistic occupancy.
 
+**As built (Phase 6):** see the Phase 6 section in §13 for what was implemented and the five decisions that differ from or add to the text above (tentative `UNKNOWN` confirmation, the 0.2 confidence floor, the configured safe-zone region and its "never creates a victim" rule, no publication without localisation, one process).
+
 ## 10. Cognitive Decision Plan
 
 ### The interface
@@ -550,14 +552,50 @@ Larger gates accumulate less bias; 0.3 m is the smallest in the good regime and 
   8. **One unexplained intermittent test failure seen during this phase.** Twice, `test_spin_in_place` (a Phase 2 test; 84.7° and −20° for a commanded 90°) failed when run first on a freshly spawned robot under `-k`; it passed on the untouched Phase 4 commit, passed in the full module, passed in two immediate reruns of the identical command on this tree, and passed in the final full run. No change of this phase touches robot physics (the perception launch options are off by default), but the cause was not found. If it recurs, suspect the first-command-after-spawn settling window under machine load.
 - **TODOs (explicit in code and docs):** uncertainty/covariance on positions; active perception (turn to centre a clipped blob); `YoloDetector`; real-camera calibration and RealSense validation; obstacle and safe-zone detection; occlusion handling; sensor noise.
 
-### Phase 6 — World model
-- **Goal:** Stable beliefs from noisy detections.
-- **Creates:** entity registry, association, EMA smoothing, confidence decay, status lifecycle, `world_model_node`, RViz markers.
-- **Depends on:** Phases 4 + 5.
-- **Interfaces:** `/fire_resq/world_state`, `UpdateVictimStatus`.
-- **Verify:** three victims converge to three stable entities with no duplicates or identity swaps across a full arena drive; confidence decays when a victim leaves view; `RESCUED` persists.
-- **Done when:** stage 5 passes and the RViz view is demo-legible.
-- **TODO:** Bayesian updates, negative evidence, covariance tracking.
+### Phase 6 — World model ✅ COMPLETE
+> **What "complete" means here, stated plainly.** The world model turns placed detections into a stable, persistent belief — three victims stay three entities with fixed identities, a victim first seen late is added without disturbing the others, confidence decays when a victim is out of view, and `RESCUED` is permanent — and publishes it in the `map` frame with a rescue-status service. It was verified in the real simulation against ground truth with live SLAM providing `map→odom`. It does **not** prioritise, plan or explore, its tracker is a smoothed nearest-neighbour placeholder, and the sensors are still noise-free.
+
+- **Goal:** stable beliefs from noisy detections, owned in one place.
+- **Created:** in `fire_resq_world_model` — a **pure-Python library** (`config`, `entities`, `world_model`, `markers`: explicit time, no ROS, so every rule is unit-tested deterministically) and a thin `world_model_node`, `config/world_model.yaml`, `launch/world_model.launch.py`. `arena_nav.launch.py` gained opt-in `world_model:=true` (needs `perception:=true` and a `map` frame); the navigation RViz view gained a MarkerArray display for `/fire_resq/world_markers`. **No interface changed:** `WorldState`, `VictimState` and `UpdateVictimStatus` were sufficient as defined.
+- **Interfaces:** consumes `/fire_resq/detections` and TF; publishes `/fire_resq/world_state` (5 Hz, `map`, robot pose from `map→base_link`) and `/fire_resq/world_markers`; serves `/fire_resq/update_victim_status`.
+- **How it behaves (each rule has a unit test):**
+  - *Association:* only **placed** detections (`position_valid`) are used; nearest track within a 0.3 m gate (the scenario validator keeps victims 0.5 m apart), strongest detection first, so two blobs of one split victim merge into one track and count as one observation. Positions are an EMA (α 0.3). No detection ever reads which camera backend produced it.
+  - *Confidence:* the latest detection's, published as `latest · exp(−unseen / 30 s)`; never deleted, just less credible. Detections below 0.2 (perception's own floor) are dropped.
+  - *Identity and new victims:* ids are `V1, V2, …` in creation order, never reused, and deliberately unlike the scenario's `victim_N` (the model does not know those). A new track is `UNKNOWN` (tentative) until a second message confirms it → `DETECTED`; a track never confirmed within 5 s is a ghost and is dropped. Confirmed victims are never dropped.
+  - *Status lifecycle* (`UpdateVictimStatus`): `DETECTED→TARGETED/UNREACHABLE`, `TARGETED→DETECTED/CARRIED/UNREACHABLE`, `CARRIED→RESCUED/DETECTED`, `UNREACHABLE→DETECTED` (explicit retry); `UNKNOWN` cannot be requested and **`RESCUED` has no exits**. One active target (`TARGETED`/`CARRIED`) at a time, published as `current_target_id`. Refusals return a reason. A `RESCUED` or `CARRIED` track absorbs detections without moving, so seeing it again cannot resurrect it or create a duplicate.
+  - *Safe zone:* configured infrastructure (a rectangle in the `map` frame, `world_model.yaml`), never discovered. A victim detected **inside** it never creates a track — otherwise a released victim would appear as a phantom fourth candidate.
+  - *Fire:* one entity, same EMA/confidence rules, its own 0.5 m gate; a second far fire is ignored and counted (TODO).
+- **Tests added:** unit — `test_world_model_lib` (36: creation, association, fragment merging, identity under noise, absence and return, late victims, EMA, confidence decay, validity, fire, the whole lifecycle, RESCUED terminal, safe zone, markers, agreement with `VictimState.msg`) and `test_world_model_config` (7: valid config, every parameter declared, **config safe zone equals the scenario's**, layering guards, library imports no ROS, launch opt-in, RViz display); node — `test_world_model_node` (15, in-process, with a `map→odom` that is offset *and* rotated so a wrong transform gives wrong numbers; a mutation that disables the transform is caught); sim — `test_world_model` (7, arena_nav + scan-matching SLAM + perception + world model).
+- **Verification results** (ground truth = scenario positions; `map` starts at the start pose, so truth is `world_to_odom`, up to SLAM's error):
+
+| Requirement | Result |
+| --- | --- |
+| Beliefs in a real `map` frame | `WorldState` in `map`, 5.0 Hz; robot pose within 5 cm of the test's own `map→base_link`; safe zone equal to the configured one |
+| Visible victims and fire believed where they are | from the start pose exactly **two** victims (the third is hidden) and the fire: **victims 1.2 and 1.0 cm, fire 0.4 cm** from truth; each real victim believed exactly once |
+| No duplicates, stable identity | a full 360° look (12 stops): same ids, nobody moved > 6 cm |
+| Confidence decays out of view, recovers in view | facing the wall for one time constant (30 s sim): every victim below 0.6 × its earlier confidence, none deleted; back in view: recovered to ≥ 0.8 × |
+| Hidden → visible | driving a translation route to line of sight: **a third entity appears, the original two keep their ids**, new entity **7.5–8.8 cm** from victim_3 (two runs; the larger error is the map frame after driving, where SLAM has moved) |
+| Rescued stays rescued | after `TARGETED→CARRIED→RESCUED`, 8 s of the victim still in view: three entities, still `RESCUED`, no target; `RESCUED→DETECTED` refused as terminal; an illegal `DETECTED→CARRIED` refused |
+| Cost | **0.23–0.27 cores** (the Python TF listener dominates), `WorldState` at 5 Hz |
+| Existing Phase 1–5 tests | **No regression attributable to this phase, but a clean full-suite pass was not obtained.** The last complete run (clean rebuild, 59 min) gave 275 passed, 1 xfail, **7 failed**: six Phase 2–4 timing tests (`test_scan_rate`, both `test_spin_in_place`, both speed-cap tests, `test_topic_rates`) and one Phase 6 wall-clock rate test. The simulator ran at ≈ 0.3× real time then (the Phase 6 test read 1.5 Hz from a 5 Hz timer). Reruns on a quiet host: robot module 9–10 of 10 (which tests fail changes run to run); Nav2 module 8 passed + xfail + 1 goal aborted with the controller "missed its desired rate". **A/B on the untouched Phase 5 commit in a clean worktree: 4 of 10 robot tests failed in one run and 0 in the next.** All Phase 6 unit (43), node (15) and simulation (7) tests pass; the rate test now counts per *simulation* second |
+
+- **Decisions and deviations from §9 (flagged in the report):**
+  1. `UNKNOWN` is used as the *tentative* status (confirmation needs two observations; `confirm_hits: 1` disables it). Not in §9; it makes ghosts and one-frame false positives invisible to cognition, which only needs to consider `DETECTED` and above.
+  2. **`min_confidence` is 0.2, not the first-guess 0.3.** Detector confidence is a pixel-count proxy: a victim ~4.7 m away at 87° reads 0.32, so a 0.3 floor would make victims beyond ~5 m impossible to create. (Found by the simulation test; ghosts are filtered by confirmation instead.)
+  3. **The safe zone is configuration** in the `map` frame (the map origin is the mission start pose, inside the zone) — the plan said "a parameter". A unit test fails if it drifts from the scenario, because the model cannot read the scenario.
+  4. Nothing is published until `map→base_link` exists: the belief is expressed in `map`, so without localisation it would be wrong, not merely uncertain.
+  5. `world_model_node` is one process; the marker builder is a pure function so demos can be unit-tested.
+- **Limitations:**
+  1. **Unplaced detections are dropped entirely.** A victim closer than ~0.5–1 m is only seen 2D (Phase 5), so while the robot is beside it its confidence *decays* though it is right there; there is no negative evidence either way. Phase 9–10's approach must not read a low confidence next to the target as "lost".
+  2. **The tracker is nearest-neighbour + EMA.** Two victims closer than about twice the gate could merge; the scenario validator prevents that here, hardware layouts must respect it. No covariance, no motion model; a moved victim is a new victim unless it moves within the gate.
+  3. **`CARRIED` tracks are frozen**, not following the robot (Phase 9 attaches here).
+  4. **Tracks are stored in `map` at observation time.** SLAM's later corrections are blended in by the EMA but old tracks are not re-anchored; there is no loop closure to cause big jumps in this configuration.
+  5. **One fire, no obstacles** (`WorldState` has no obstacle field; the SLAM grid is the only obstacle memory).
+  6. **Confidence is the detector's pixel-count score**, low for far victims: honest, but it means Phase 8 may penalise a far victim twice (its confidence and its distance); weigh that when tuning.
+  7. **RViz rendering not verified by eye** (screen capture is unavailable under WSLg, as in Phase 4): marker frames, types, colours, labels and lifetimes are asserted in tests; whether they *look* right in RViz has not been seen.
+  8. The status service has no caller authentication; any node may change a status.
+  9. **Test-suite reliability on this host.** The Phase 2–4 timing tests (robot motion, topic and scan rates, Nav2 goals) are intermittently unreliable when the host runs the simulator below real time; the cause of the slowdown (Windows-side contention; the C: drive was 93 % full) was not established. Check `gz topic -e -t /stats -n 4` (real-time factor ≈ 1.0) before trusting a failure, and A/B against a clean worktree of the last accepted commit before suspecting code. Not fixed here: weakening those tests was out of scope.
+- **TODOs (explicit in code and docs):** Bayesian belief updates and covariance tracking; negative evidence; active perception; multiple fires and obstacle memory; a `CARRIED` track following the robot; re-anchoring tracks after map corrections; battery/resource state and dynamic fire risk (cognition's, not this package's).
 
 ### Phase 7 — Nav2 planning *(moved ahead of cognition)*
 - **Goal:** Reliable point-to-point autonomy plus the path-query capability cognition needs.

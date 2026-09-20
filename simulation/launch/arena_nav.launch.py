@@ -24,6 +24,7 @@ def generate_launch_description():
     sim = Path(get_package_share_directory('fire_resq_simulation')) / 'launch'
     nav = Path(get_package_share_directory('fire_resq_navigation')) / 'launch'
     perc = Path(get_package_share_directory('fire_resq_perception')) / 'launch'
+    wm = Path(get_package_share_directory('fire_resq_world_model')) / 'launch'
     return LaunchDescription([
         DeclareLaunchArgument('scenario', default_value='default'),
         DeclareLaunchArgument('gui', default_value='true'),
@@ -38,6 +39,8 @@ def generate_launch_description():
         DeclareLaunchArgument('perception_frame', default_value='map',
                               description='Frame perception publishes positions in (map needs localization != none).'),
         DeclareLaunchArgument('spatial_backend', default_value='auto', description='auto | depth | known_height'),
+        DeclareLaunchArgument('world_model', default_value='false',
+                              description='Also run the world model (needs perception:=true and a `map` frame).'),
         DeclareLaunchArgument('camera_hfov', default_value='1.518',
                               description='Depth/RGB horizontal FOV, radians (1.518 = 87 deg).'),
         # SCOPED, because launch arguments are GLOBAL across included launch files: the values set for
@@ -71,5 +74,10 @@ def generate_launch_description():
                 launch_arguments={'use_sim_time': 'true',
                                   'target_frame': LaunchConfiguration('perception_frame'),
                                   'spatial_backend': LaunchConfiguration('spatial_backend')}.items()),
+        ]),
+        GroupAction(scoped=True, condition=IfCondition(LaunchConfiguration('world_model')), actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(str(wm / 'world_model.launch.py')),
+                launch_arguments={'use_sim_time': 'true', 'world_frame': 'map'}.items()),
         ]),
     ])

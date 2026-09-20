@@ -41,16 +41,17 @@ def scenario():
     return load_scenario(resolve_scenario('default'))
 
 
-def _bring_up(args, depth, launch_file='arena.launch.py', scan=False, nav=False, wait_map=None, perception=False):
+def _bring_up(args, depth, launch_file='arena.launch.py', scan=False, nav=False, wait_map=None, perception=False,
+              world=False):
     """Launch, wait until the robot is publishing and has settled, return a handle bundle."""
     ctx = run_sim(args, launch_file=launch_file)
     sim = ctx.__enter__()
     bot = gt = None
     try:
-        bot = Bot(depth=depth, scan=scan, nav=nav, perception=perception)
+        bot = Bot(depth=depth, scan=scan, nav=nav, perception=perception, world=world)
         gt = GroundTruth()
         needed = (['odom', 'rgb', 'joint_states'] + (['depth'] if depth else []) + (['scan'] if scan else [])
-                  + (['detections'] if perception else []))
+                  + (['detections'] if perception else []) + (['world_state'] if world else []))
         bot.wait_for(lambda: all(bot.counts[k] > 5 for k in needed) and gt.get() is not None
                      and 'rgb_info' in bot.msgs and (not depth or 'depth_info' in bot.msgs)
                      and (not (nav if wait_map is None else wait_map) or (len(bot.grids) > 0 and bot.map_pose() is not None)),
@@ -99,6 +100,16 @@ def percsim_nav():
     No localization, so positions are in `odom`."""
     env = _bring_up(['localization:=none', 'navigation:=false', 'perception:=true', 'perception_frame:=odom'],
                     depth=True, launch_file='arena_nav.launch.py', scan=True, perception=True)
+    yield env
+    _teardown(env)
+
+
+@pytest.fixture(scope='module')
+def worldsim():
+    """The Phase 6 stack: arena_nav (87 deg) + scan-matching SLAM (so a real `map` frame) + perception + world model.
+    No Nav2: the tests drive the robot themselves."""
+    env = _bring_up(['navigation:=false', 'perception:=true', 'world_model:=true'], depth=True, launch_file='arena_nav.launch.py',
+                    scan=True, nav=True, perception=True, world=True)
     yield env
     _teardown(env)
 

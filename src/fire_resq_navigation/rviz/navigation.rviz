@@ -59,6 +59,14 @@ Visualization Manager:
       Name: RobotModel
       Description Topic:
         Value: /robot_description
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: World model (victims, fire, safe zone)
+      Namespaces: {}
+      Topic:
+        Value: /fire_resq/world_markers
+        Depth: 5
+        Reliability Policy: Reliable
     - Class: rviz_default_plugins/TF
       Enabled: true
       Name: TF (map, odom, base_link, camera)

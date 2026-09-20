@@ -21,7 +21,8 @@ import cv2
 import numpy as np
 import rclpy
 import tf2_ros
-from fire_resq_interfaces.msg import DetectionArray
+from fire_resq_interfaces.msg import DetectionArray, WorldState
+from fire_resq_interfaces.srv import UpdateVictimStatus
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
@@ -252,9 +253,11 @@ def class_masks(rgb):
 
 # ------------------------------------------------------------------ the test robot client
 class Bot(Node):
-    def __init__(self, depth=True, scan=False, nav=False, perception=False):
+    def __init__(self, depth=True, scan=False, nav=False, perception=False, world=False):
         super().__init__('sim_test_bot')
         self.detections = deque(maxlen=600)     # (sim time received, DetectionArray)
+        self.world_states = deque(maxlen=100)   # (sim time received, WorldState)
+        self._status_client = None
         self.grids = deque(maxlen=5)
         self._nav_client = None
         self.map_odom = []          # (t, x, y, yaw) of map->odom, to judge how erratic SLAM's correction is
@@ -284,6 +287,9 @@ class Bot(Node):
             self.create_subscription(LaserScan, '/scan', self._scan, s)
         if perception:
             self.create_subscription(DetectionArray, '/fire_resq/detections', self._detections, 10)
+        if world:
+            self.create_subscription(WorldState, '/fire_resq/world_state', self._world, 10)
+            self._status_client = self.create_client(UpdateVictimStatus, '/fire_resq/update_victim_status')
         if nav:
             self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.create_subscription(OccupancyGrid, '/map', lambda m: self.grids.append(m),
@@ -312,6 +318,24 @@ class Bot(Node):
         self.counts['rgb'] += 1
         self.rgb_buf.append(m)
         self.msgs['rgb'] = m
+
+    def _world(self, m):
+        self.counts['world_state'] += 1
+        self.world_states.append((self.simt, m))
+
+    @property
+    def world(self):
+        """The newest WorldState, or None."""
+        return self.world_states[-1][1] if self.world_states else None
+
+    def set_status(self, victim_id, status, timeout=5.0):
+        """Call the world model's UpdateVictimStatus service (what the rescue FSM will do). Returns the response."""
+        req = UpdateVictimStatus.Request()
+        req.victim_id, req.new_status = victim_id, int(status)
+        fut = self._status_client.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=timeout)
+        assert fut.done(), 'UpdateVictimStatus timed out'
+        return fut.result()
 
     def _detections(self, m):
         self.counts['detections'] += 1
