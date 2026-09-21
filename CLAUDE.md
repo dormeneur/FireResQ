@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–6 complete** — the ROS 2 workspace builds (ten packages); the simulated robot drives, reports odometry and joint states and publishes RGB/depth; a deterministic 5 m × 5 m rescue arena (fire, three victims, safe zone, obstacles) launches from a scenario file; and a navigation stack (depth → `/scan`, SLAM Toolbox or AMCL for `map→odom`, Nav2) maps the arena and drives to supplied goals; and a perception node finds the fire and victims by colour and places them in a TF frame (depth or, RGB-only, from object-height priors) on `/fire_resq/detections`; and a world model keeps a persistent belief about them (victim identities, status, confidence, fire, safe zone) on `/fire_resq/world_state`. All of it is covered by a regression suite that checks against Gazebo ground truth (`tests/`). Cognition (prioritisation), rescue planning and the electromagnet are not implemented; those packages are skeletons. See [docs/Implementation_Plan.md](docs/Implementation_Plan.md) for the phase roadmap and what each phase may touch.
+**Phases 0–6 and the cognition phase (plan §13 "Phase 8", built before Phase 7 on the maintainer's instruction) complete** — the ROS 2 workspace builds (ten packages); the simulated robot drives, reports odometry and joint states and publishes RGB/depth; a deterministic 5 m × 5 m rescue arena (fire, three victims, safe zone, obstacles) launches from a scenario file; and a navigation stack (depth → `/scan`, SLAM Toolbox or AMCL for `map→odom`, Nav2) maps the arena and drives to supplied goals; and a perception node finds the fire and victims by colour and places them in a TF frame (depth or, RGB-only, from object-height priors) on `/fire_resq/detections`; and a world model keeps a persistent belief about them (victim identities, status, confidence, fire, safe zone) on `/fire_resq/world_state`; and a cognition node decides which victim to rescue next from that belief, asking Nav2's planner for path lengths, and publishes the choice with its full explanation on `/fire_resq/rescue_target`. All of it is covered by a regression suite that checks against Gazebo ground truth (`tests/`). Rescue planning (the FSM), the electromagnet and hardware are not implemented; those packages are skeletons. **Plan Phase 7 (Nav2 reliability + the path-query helper) is still open**: only the narrow query adapter cognition needs was built. See [docs/Implementation_Plan.md](docs/Implementation_Plan.md) for the phase roadmap and what each phase may touch.
 
 Design docs remain the source of truth:
 
@@ -111,6 +111,17 @@ ros2 topic echo /fire_resq/world_state --once
 ros2 service call /fire_resq/update_victim_status fire_resq_interfaces/srv/UpdateVictimStatus "{victim_id: 'V1', new_status: 2}"
 ros2 launch fire_resq_world_model world_model.launch.py use_sim_time:=true        # the node alone (what hardware runs)
 
+# COGNITION: opt-in on arena_nav; needs perception + world model + Nav2 (navigation:=true) and a `map` frame.
+# Nav2 must run under AMCL on a saved map (see "Navigation"), so first map + save as above, then:
+ros2 launch fire_resq_simulation arena_nav.launch.py localization:=amcl map:=/tmp/arena.yaml perception:=true world_model:=true cognition:=true
+ros2 launch fire_resq_simulation arena_nav.launch.py localization:=amcl map:=/tmp/arena.yaml perception:=true world_model:=true cognition:=true decision_model:=nearest   # the baseline
+ros2 topic echo /fire_resq/rescue_target --once            # the choice: victim_id, approach_pose, utility, breakdown, rationale (empty id = nothing selectable)
+ros2 topic echo /fire_resq/decision_report --once          # JSON: every candidate's factors, contributions, exclusions, and the exact world it decided on
+ros2 service call /fire_resq/select_target fire_resq_interfaces/srv/SelectTarget "{}"     # decide now (what the rescue FSM will call)
+ros2 launch fire_resq_cognition prioritizer.launch.py use_sim_time:=true decision_model:=weighted_utility   # the node alone
+# deterministic evaluation on the scenario (no simulator): the MVP vs nearest-first, every factor value, and the sensitivity sweep
+python3 tests/sim/experiments/prioritization_eval.py --sweep
+
 # robot-only bringup in an EMPTY world (what arena.launch.py wraps)
 ros2 launch fire_resq_simulation sim.launch.py                        # Gazebo GUI
 ros2 launch fire_resq_simulation sim.launch.py gui:=false             # headless (server only)
@@ -127,11 +138,11 @@ Three tiers (config in `pytest.ini`). Source the workspace first (`source instal
 python3 -m pytest tests/unit -q                       # <1 s: scenario, robot params, Nav2 params, launch/config rules, architecture guards
 python3 -m pytest tests/node -q                       # ~40 s: the perception and world-model nodes in-process against synthetic ROS traffic (no Gazebo)
 python3 -m pytest tests/sim -m "not slow" -q          # ~20 min: launches the real sim (one per module) - robot, TF, sensors, arena, scan, SLAM, AMCL, Nav2
-python3 -m pytest tests -q -rPx                       # EVERYTHING incl. slow: 25-60 min depending on the host (see "Test reliability" below); -rPx prints the MEASURED values
+python3 -m pytest tests -q -rPx                       # EVERYTHING (375 tests: 242 unit, 43 node, 90 sim): ~30 min on a healthy host, far more on a stalling one (see "Test reliability"); -rPx prints the MEASURED values
 python3 -m pytest tests/sim/test_robot.py -k spin -v  # one module / one case
 ```
 
-**Test reliability on this host (measured, Phase 6).** The last clean-host full run (Phase 5) was 217 passed + 1 xfail in ~26 min. On a slowed host the same suite took 59 min and the timing tests failed (275 passed, 7 failed, 1 xfail): robot motion (spin angles, speed caps, distances), topic/scan rates and Nav2 goals. On the untouched Phase 5 commit, in a clean worktree, the robot module failed 4 of 10 tests in one run and 0 in the next. So: before trusting a sim failure, check the real-time factor (`gz topic -e -t /stats -n 4` → `real_time_factor` ≈ 1.0, ignoring the first samples), rerun the module, and A/B against a clean worktree of the last accepted commit (`git worktree add <dir> <commit>` + `colcon build`). Tests that count messages should count per *simulation* second, never wall-clock.
+**Test reliability on this host (measured, Phases 6–8).** A complete run takes ~30 min on a healthy host (Phase 5: 217 passed + 1 xfail; after cognition, on a freshly rebooted host: 372 passed, 1 xfail, 2 failed). Two Phase 4 tests are **intermittent, and were shown to be independent of the Phase 5–8 code**: `test_navigation_avoids_an_obstacle_it_must_go_round` (the Nav2 detour goal ends ~9 cm from the goal and aborts; on the *same saved map* it failed 1 run in 3 on both the Phase 6 commit and the Phase 7 tree) and `test_occupied_cells_lie_on_real_surfaces` (SLAM map precision is 75–93 % within 5 cm run to run against a 70 % threshold; 65 % and 69 % have been seen). A **stalling host** (Windows-side; seen after long uptime) makes far more fail: robot motion, topic/scan rates, fixture start-up, an 8.5-min build instead of 17 s. So: before trusting a sim failure, check the real-time factor (`gz topic -e -t /stats -n 6` → `real_time_factor` ≈ 1.0, ignoring the first samples, and no 0.5 / 3.0 swings), rerun the module, and if it still fails A/B it against a clean worktree of the last accepted commit (`git worktree add <dir> <commit>` + `colcon build`, alternating runs, several of each: single runs mislead). To isolate SLAM/map randomness from a Nav2 result, reuse one saved map for both trees: the mapping fixture saves it under `/tmp/fire_resq_map_*/arena.yaml`; then `FIRE_RESQ_TEST_MAP=<that yaml> python3 -m pytest tests/sim/test_nav2.py`. A reboot of WSL cleared a persistent slowdown. Tests that count messages must count per *simulation* second, never wall-clock; `lifecycle_state()` returns `unknown` on a slow `ros2` CLI call so wait loops keep polling.
 
 **Reproducible experiments** (not tests; pytest does not collect them) live in `tests/sim/experiments/`: `slam_fov_spike.py` (the Phase 4 Step 0 SLAM viability/tuning measurements), `nav2_localization_diag.py` (SLAM/odometry error vs velocity while Nav2 drives), `nav_performance.py` (rates, map-update cadence, CPU, RTF), `perception_accuracy.py` (Phase 5: position error per estimator and range, and what the motion gate costs and buys).
 
@@ -172,7 +183,7 @@ src/fire_resq_description/    URDF/xacro + a tiny Python reader of parameters.xa
 src/fire_resq_navigation/     depth->/scan, SLAM Toolbox / AMCL / Nav2 config + launch. Shared with hardware; no Gazebo, no scenario
 src/fire_resq_perception/     Phase 5 ✅ colour detector + depth / known-height spatial estimation -> /fire_resq/detections. Shared with hardware
 src/fire_resq_world_model/    Phase 6 ✅ sole owner of believed state: pure-Python WorldModel library + world_model_node
-src/fire_resq_cognition/      Phase 8   VictimPrioritizer implementations
+src/fire_resq_cognition/      Phase 8 ✅ VictimPrioritizer (weighted utility + nearest baseline), Nav2 path-query adapter, prioritizer_node
 src/fire_resq_planning/       Phase 10  rescue FSM + Nav2 client
 src/fire_resq_control/        Phase 9   magnet abstraction, velocity plumbing
 src/fire_resq_hardware/       Phase 12  ESP32 bridge — the ONLY hardware-aware package
@@ -252,6 +263,24 @@ One node (`perception_node`), a library behind two interfaces (`Detector`, `Spat
 - Not implemented on purpose (explicit TODOs): Bayesian updates and covariance, negative evidence, multiple fires, obstacle memory, a `CARRIED` track following the robot, re-anchoring tracks after map corrections. **Prioritisation is Phase 8, not here** (`VictimState.risk/accessibility/rescue_cost` stay 0 for cognition to fill).
 - RViz markers (`/fire_resq/world_markers`, shown by `navigation.rviz`) are asserted in tests but **not verified by eye** (no screen capture under WSLg).
 
+## Cognition (plan Phase 8, built before Phase 7)
+
+```text
+/fire_resq/world_state ──> prioritizer_node ──> /fire_resq/rescue_target (latched) + /fire_resq/decision_report (JSON) + SelectTarget
+                              │  VictimPrioritizer (pure): weighted_utility | nearest
+                              └─ path query ──> Nav2 /compute_path_to_pose   (cognition only ASKS; it plans nothing)
+```
+
+`fire_resq_cognition` decides; it does not act (no `TARGETED` marking, no navigation goals: that is the Phase 10 FSM). The decision logic is ROS-free and unit-guarded: it imports no Gazebo, hardware, camera, detector, scenario, perception, world-model or navigation code, and contains no victim-id, coordinate, rescue-order or weight literal. Full model, results and limitations: [docs/Implementation_Plan.md](docs/Implementation_Plan.md) Phase 8. What you must not forget:
+- **The weights are the policy** (`config/prioritizer.yaml`, `weights.*`). Defaults are priority tiers (risk 3; fire-proximity, reach, cost 1; accessibility, confidence 0.5), not fitted. On the default scenario the MVP picks the victim beside the fire and nearest-first picks the closest one; the MVP's choice flips only if `weights.risk` drops to about 1.1. If you change defaults, rerun `prioritization_eval.py --sweep`.
+- **Eligibility is explicit.** Only `DETECTED`/`TARGETED` victims that Nav2 can reach *out and back* are candidates. Everything else is listed with its reason. A planner that cannot be asked is `unknown` and is **never** treated as reachable.
+- **Two planner queries per candidate**, to an approach point 0.4 m short of the victim (Nav2 rejects goals inside a victim's inflation). `RescueTarget.approach_pose` is that point, *provisional*; the executable approach pose is Phase 10's.
+- **Accessibility = straight ÷ planned length** (directness), not a 0/1 flag: the partition makes victim_3's route 0.63 as direct.
+- **Incomplete decisions are retried** (3 s) and paths refreshed (15 s): a decision made while Nav2's costmap is still starting says "goal outside the map" and used to stick.
+- **The cognition node is single-threaded with the planner client on its own node/thread.** A multithreaded executor cost ~0.9 cores under the 250 Hz sim clock; this costs ~0.3 (two nodes in the live test ~0.65).
+- **`decision_report` embeds the exact world each decision used**, so a decision can be replayed offline from its own report.
+- Not implemented on purpose (explicit TODOs): Bayesian/uncertainty reasoning, active perception, dynamic fire risk, battery/resource terms, decision hysteresis (a near tie may flip the target on re-decision), a typed decision message, learned policies.
+
 ## The rescue arena (Phase 3)
 
 **The scenario YAML is the only place object placement lives** (`simulation/config/scenarios/default.yaml`; schema documented in its header, unknown keys rejected). It is simulator ground truth: **no robot node may read it** (a unit-test guard enforces this) — the robot learns the world through perception → world model. The world SDF is *generated* from it at every launch (byte-identical output for identical YAML), by injecting the scenario into the shared base world so physics/plugins are defined once. Layout rules (wall/obstacle clearance, victim spacing > the world model's association gate, nothing overlapping, no victim in the safe zone) are validated at load, so a bad generated scenario fails loudly. To try another layout, write another YAML.
@@ -280,7 +309,7 @@ Nearest-first and risk-aware prioritisation give *different answers* here (victi
 
 ## Build order
 
-**Next up: Phase 7** — Nav2 planning: reliable point-to-point autonomy plus a path-query helper wrapping `ComputePathToPose` (length and reachability for cognition). It depends only on Phase 4; remember the known limitation (navigate under AMCL on a saved map, not concurrently with scan-matching SLAM). Phases 0–6 are done; [docs/Implementation_Plan.md](docs/Implementation_Plan.md) §13 defines each phase's scope, verification, and definition of done. Do not implement ahead of the current phase — the TODO markers in each package mark where later work attaches.
+**Next up: plan Phase 7** — Nav2 planning: reliable point-to-point autonomy from several start poses and a path-query helper (cognition already has its own narrow `Nav2PathQuery`; decide whether to promote it). It depends only on Phase 4; remember the known limitation (navigate under AMCL on a saved map, not concurrently with scan-matching SLAM). Then Phase 9 (magnet) and 10 (the rescue loop, which calls `SelectTarget` and computes the executable approach pose). Phases 0–6 and cognition are done; [docs/Implementation_Plan.md](docs/Implementation_Plan.md) §13 defines each phase's scope, verification, and definition of done. Do not implement ahead of the current phase — the TODO markers in each package mark where later work attaches.
 
 Work down the simulation ladder in [docs/Simulation.md](docs/Simulation.md) — each stage is verifiable on its own and later stages assume earlier ones work: robot spawns and drives via `/cmd_vel` → simulated camera/depth + odometry → SLAM map and localization → perception detections → world model ingests detections → decision engine picks a victim dynamically → Nav2 drives to it → simulated electromagnet attach/release → return to safe zone → mark rescued and select the next target.
 

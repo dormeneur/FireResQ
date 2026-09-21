@@ -25,6 +25,7 @@ def generate_launch_description():
     nav = Path(get_package_share_directory('fire_resq_navigation')) / 'launch'
     perc = Path(get_package_share_directory('fire_resq_perception')) / 'launch'
     wm = Path(get_package_share_directory('fire_resq_world_model')) / 'launch'
+    cog = Path(get_package_share_directory('fire_resq_cognition')) / 'launch'
     return LaunchDescription([
         DeclareLaunchArgument('scenario', default_value='default'),
         DeclareLaunchArgument('gui', default_value='true'),
@@ -39,6 +40,9 @@ def generate_launch_description():
         DeclareLaunchArgument('perception_frame', default_value='map',
                               description='Frame perception publishes positions in (map needs localization != none).'),
         DeclareLaunchArgument('spatial_backend', default_value='auto', description='auto | depth | known_height'),
+        DeclareLaunchArgument('cognition', default_value='false',
+                              description='Also run cognition (needs world_model:=true and Nav2, i.e. navigation:=true).'),
+        DeclareLaunchArgument('decision_model', default_value='weighted_utility', description='weighted_utility | nearest'),
         DeclareLaunchArgument('world_model', default_value='false',
                               description='Also run the world model (needs perception:=true and a `map` frame).'),
         DeclareLaunchArgument('camera_hfov', default_value='1.518',
@@ -79,5 +83,11 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(str(wm / 'world_model.launch.py')),
                 launch_arguments={'use_sim_time': 'true', 'world_frame': 'map'}.items()),
+        ]),
+        GroupAction(scoped=True, condition=IfCondition(LaunchConfiguration('cognition')), actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(str(cog / 'prioritizer.launch.py')),
+                launch_arguments={'use_sim_time': 'true',
+                                  'decision_model': LaunchConfiguration('decision_model')}.items()),
         ]),
     ])

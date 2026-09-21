@@ -1,5 +1,6 @@
 """Fixtures for the simulation regression tier. Each test module gets a FRESH simulation
 (module scope), so tests cannot depend on what another module left the robot doing."""
+import os
 import shutil
 import subprocess
 import tempfile
@@ -15,7 +16,7 @@ import rclpy  # noqa: E402
 from fire_resq_simulation import load_scenario, resolve_scenario  # noqa: E402
 from geometry_msgs.msg import PoseWithCovarianceStamped  # noqa: E402
 from routes import LAP_WORLD  # noqa: E402
-from simlib import Bot, GroundTruth, lifecycle_state, run_sim  # noqa: E402
+from simlib import Bot, GroundTruth, lifecycle_state, run_sim, start_group, stop_group  # noqa: E402
 
 
 def pytest_collection_modifyitems(config, items):
@@ -42,16 +43,16 @@ def scenario():
 
 
 def _bring_up(args, depth, launch_file='arena.launch.py', scan=False, nav=False, wait_map=None, perception=False,
-              world=False):
+              world=False, cognition=False, wait_downstream=True):
     """Launch, wait until the robot is publishing and has settled, return a handle bundle."""
     ctx = run_sim(args, launch_file=launch_file)
     sim = ctx.__enter__()
     bot = gt = None
     try:
-        bot = Bot(depth=depth, scan=scan, nav=nav, perception=perception, world=world)
+        bot = Bot(depth=depth, scan=scan, nav=nav, perception=perception, world=world, cognition=cognition)
         gt = GroundTruth()
         needed = (['odom', 'rgb', 'joint_states'] + (['depth'] if depth else []) + (['scan'] if scan else [])
-                  + (['detections'] if perception else []) + (['world_state'] if world else []))
+                  + (['detections'] if perception and wait_downstream else []) + (['world_state'] if world and wait_downstream else []))
         bot.wait_for(lambda: all(bot.counts[k] > 5 for k in needed) and gt.get() is not None
                      and 'rgb_info' in bot.msgs and (not depth or 'depth_info' in bot.msgs)
                      and (not (nav if wait_map is None else wait_map) or (len(bot.grids) > 0 and bot.map_pose() is not None)),
@@ -115,6 +116,25 @@ def worldsim():
 
 
 @pytest.fixture(scope='module')
+def cogsim(arena_map_yaml):
+    """The Phase 7 stack, all of it real: arena_nav + AMCL on the saved map + Nav2 + perception + world model + cognition
+    (the MVP weighted utility), plus a SECOND cognition node running the nearest baseline on private topics, so both
+    models decide on the same live world with the same real planner."""
+    env = _amcl_bring_up(arena_map_yaml, True, ['perception:=true', 'world_model:=true', 'cognition:=true'],
+                         perception=True, world=True, cognition=True)
+    nearest = start_group(['ros2', 'run', 'fire_resq_cognition', 'prioritizer_node', '--ros-args', '-r', '__node:=prioritizer_nearest',
+                           '-p', 'use_sim_time:=true', '-p', 'decision_model:=nearest', '-p', 'rescue_target_topic:=/eval/nearest_target',
+                           '-p', 'decision_report_topic:=/eval/nearest_report', '-p', 'select_target_service:=/eval/select_target_nearest'])
+    try:
+        env.bot.wait_for(lambda: all(c.service_is_ready() for c in env.bot.select_clients.values()) and env.bot.world is not None
+                         and env.bot.set_status_ready(), 60, 'both cognition nodes, the world model and a world state')
+        yield env
+    finally:
+        stop_group(nearest)
+        _teardown(env)
+
+
+@pytest.fixture(scope='module')
 def navsim():
     """The arena with depth->scan only (arena_nav.launch.py, 87 deg camera, no SLAM/Nav2)."""
     env = _bring_up(['localization:=none', 'navigation:=false'], depth=True, launch_file='arena_nav.launch.py', scan=True)
@@ -127,6 +147,9 @@ def arena_map_yaml(_ros, scenario):
     """Map the arena ONCE per test session: drive a lap under SLAM (scan-matching preset), turn
     back to the start heading, save the map, and tear that simulation down completely. Every
     module that needs a saved map reuses it, and each launches its own fresh simulation after."""
+    fixed = os.environ.get('FIRE_RESQ_TEST_MAP')      # reproducible experiments: reuse an already-saved map (a .yaml path)
+    if fixed:
+        return Path(fixed)
     env = _bring_up(['navigation:=false'], depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True)
     try:
         bot = env.bot
@@ -144,12 +167,12 @@ def arena_map_yaml(_ros, scenario):
     return Path(str(out) + '.yaml')
 
 
-def _amcl_bring_up(map_yaml, navigation):
+def _amcl_bring_up(map_yaml, navigation, extra=(), **flags):
     """Fresh simulation, AMCL on the saved map (+ Nav2 if asked), start pose given on /initialpose.
     The start pose is the MISSION start pose - the map origin, because the map was built from the
     start - not ground truth."""
-    env = _bring_up(['localization:=amcl', f'map:={map_yaml}', f'navigation:={"true" if navigation else "false"}'],
-                    depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True, wait_map=False)
+    env = _bring_up(['localization:=amcl', f'map:={map_yaml}', f'navigation:={"true" if navigation else "false"}', *extra],
+                    depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True, wait_map=False, wait_downstream=False, **flags)
     try:
         bot = env.bot
         bot.wait_for(lambda: lifecycle_state('/map_server') == 'active' and lifecycle_state('/amcl') == 'active',
@@ -165,6 +188,12 @@ def _amcl_bring_up(map_yaml, navigation):
             pub.publish(m)
             bot.spin_wall(0.4)
         bot.wait_for(lambda: bot.map_pose() is not None, 30, 'map->base_link from AMCL')
+        # Perception and the world model need the map frame (map->base_link), which only exists NOW: wait for them here,
+        # not in _bring_up, or the start pose would never be published.
+        if flags.get('perception'):
+            bot.wait_for(lambda: bot.counts['detections'] > 5, 60, 'perception detections')
+        if flags.get('world'):
+            bot.wait_for(lambda: bot.counts['world_state'] > 5, 60, 'the world model to publish')
         if navigation:
             bot.wait_for(lambda: all(lifecycle_state(f'/{n}') == 'active' for n in
                                      ('controller_server', 'planner_server', 'behavior_server', 'bt_navigator')),

@@ -1,0 +1,37 @@
+# FireResQ cognition parameters. The weights ARE the policy: they say how much a metre of travel is worth against a
+# metre closer to the fire. They are parameters, never literals in the scoring code.
+prioritizer_node:
+  ros__parameters:
+    # ---- which decision model -----------------------------------------------------------------
+    decision_model: weighted_utility       # weighted_utility (MVP) | nearest (the PRD section 11 baseline)
+
+    # ---- interface ------------------------------------------------------------------------------
+    world_state_topic: /fire_resq/world_state
+    rescue_target_topic: /fire_resq/rescue_target        # latched; an empty victim_id means "nothing selected" (reason in rationale)
+    decision_report_topic: /fire_resq/decision_report    # latched JSON: every candidate, factors, contributions, exclusions
+    select_target_service: /fire_resq/select_target
+    planner_action: /compute_path_to_pose                # Nav2's planner; cognition only ASKS it for path length and reachability
+    planner_id: ''
+    world_frame: map
+    path_query_timeout_s: 3.0
+
+    # ---- reassessment ---------------------------------------------------------------------------
+    auto_reassess: true                    # decide again when the world model changes (false = only on SelectTarget)
+    reassess_period_s: 1.0                 # at most one automatic decision per this many seconds
+    requery_distance_m: 0.5                # the robot moving this far changes the paths, so decide again
+    position_change_m: 0.15                # a victim or the fire moving this far counts as a change
+    retry_period_s: 3.0                    # after an incomplete decision (nothing selectable, or the planner could not be asked)
+    refresh_period_s: 15.0                 # re-ask the planner at least this often, so paths follow the costmap
+
+    # ---- the decision model ---------------------------------------------------------------------
+    # Priority tiers, not fitted numbers (see config.py): safety first, practicality second, tie-breakers third.
+    weights.risk: 3.0                      # tier 1: danger to the victim from the fire
+    weights.fire_proximity: 1.0            # tier 2: nearer the fire = more urgent
+    weights.reach: 1.0                     # tier 2: a shorter trip out is cheaper
+    weights.cost: 1.0                      # tier 2: the whole rescue (out and back to the safe zone), subtracted
+    weights.accessibility: 0.5             # tier 3: how direct the route is (straight / planned)
+    weights.confidence: 0.5                # tier 3: how sure perception is that the victim exists
+    extent_m: 7.07                         # normalisation length: the arena diagonal (a configured extent, not a coordinate)
+    fire_hazard_radius_m: 1.0              # within this of the fire a victim is in immediate danger (risk = 1)
+    fire_risk_decay_m: 1.0                 # beyond it, risk decays exponentially with this length scale
+    approach_standoff_m: 0.4               # the planner is asked about a point this far short of the victim

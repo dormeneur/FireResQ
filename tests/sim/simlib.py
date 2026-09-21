@@ -21,8 +21,8 @@ import cv2
 import numpy as np
 import rclpy
 import tf2_ros
-from fire_resq_interfaces.msg import DetectionArray, WorldState
-from fire_resq_interfaces.srv import UpdateVictimStatus
+from fire_resq_interfaces.msg import DetectionArray, RescueTarget, WorldState
+from fire_resq_interfaces.srv import SelectTarget, UpdateVictimStatus
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
@@ -31,6 +31,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, JointState, LaserScan
+from std_msgs.msg import String
 from tf2_msgs.msg import TFMessage
 
 REPO = Path(__file__).resolve().parents[2]
@@ -168,7 +169,12 @@ def stop_group(proc, wait=10):
 
 
 def lifecycle_state(node):
-    out = subprocess.run(['ros2', 'lifecycle', 'get', node], capture_output=True, text=True, timeout=15).stdout
+    """A node's lifecycle state, or 'unknown' if it cannot be read right now. A slow `ros2` CLI start-up (a stalling host
+    was measured taking > 15 s) must not abort the wait loop that is polling this: the loop has its own overall timeout."""
+    try:
+        out = subprocess.run(['ros2', 'lifecycle', 'get', node], capture_output=True, text=True, timeout=15).stdout
+    except subprocess.TimeoutExpired:
+        return 'unknown'
     return out.split()[0] if out.split() else 'unknown'
 
 
@@ -253,11 +259,14 @@ def class_masks(rgb):
 
 # ------------------------------------------------------------------ the test robot client
 class Bot(Node):
-    def __init__(self, depth=True, scan=False, nav=False, perception=False, world=False):
+    def __init__(self, depth=True, scan=False, nav=False, perception=False, world=False, cognition=False):
         super().__init__('sim_test_bot')
         self.detections = deque(maxlen=600)     # (sim time received, DetectionArray)
         self.world_states = deque(maxlen=100)   # (sim time received, WorldState)
         self._status_client = None
+        self.targets = {}                       # topic -> newest RescueTarget
+        self.reports = {}                       # topic -> newest decision report (parsed JSON)
+        self.select_clients = {}
         self.grids = deque(maxlen=5)
         self._nav_client = None
         self.map_odom = []          # (t, x, y, yaw) of map->odom, to judge how erratic SLAM's correction is
@@ -290,6 +299,13 @@ class Bot(Node):
         if world:
             self.create_subscription(WorldState, '/fire_resq/world_state', self._world, 10)
             self._status_client = self.create_client(UpdateVictimStatus, '/fire_resq/update_victim_status')
+        if cognition:
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+            for tag, target, report, service in (('mvp', '/fire_resq/rescue_target', '/fire_resq/decision_report', '/fire_resq/select_target'),
+                                                 ('nearest', '/eval/nearest_target', '/eval/nearest_report', '/eval/select_target_nearest')):
+                self.create_subscription(RescueTarget, target, lambda m, t=tag: self.targets.__setitem__(t, m), latched)
+                self.create_subscription(String, report, lambda m, t=tag: self.reports.__setitem__(t, json.loads(m.data)), latched)
+                self.select_clients[tag] = self.create_client(SelectTarget, service)
         if nav:
             self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.create_subscription(OccupancyGrid, '/map', lambda m: self.grids.append(m),
@@ -327,6 +343,16 @@ class Bot(Node):
     def world(self):
         """The newest WorldState, or None."""
         return self.world_states[-1][1] if self.world_states else None
+
+    def set_status_ready(self):
+        return self._status_client.service_is_ready()
+
+    def select_target(self, tag='mvp', timeout=30.0):
+        """Call a cognition node's SelectTarget service (what the rescue FSM will do). Returns the response."""
+        fut = self.select_clients[tag].call_async(SelectTarget.Request())
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=timeout)
+        assert fut.done(), 'SelectTarget timed out'
+        return fut.result()
 
     def set_status(self, victim_id, status, timeout=5.0):
         """Call the world model's UpdateVictimStatus service (what the rescue FSM will do). Returns the response."""

@@ -275,6 +275,8 @@ Selected by a single ROS param, `decision_model`:
 
 The baseline is not extra work — it is the second implementation that proves the interface is real, and it is required by the evaluation anyway. One mechanism, two requirements.
 
+**As built (Phase 8): see the Phase 8 section in §13** — the formula below is implemented with a graded accessibility, two planner queries per candidate and a hazard-radius fire risk; six decisions differ from or add to this text.
+
 ### The MVP utility
 
 For each victim with status ∉ {`RESCUED`, `CARRIED`}:
@@ -606,14 +608,59 @@ Larger gates accumulate less bias; 0.3 m is the smallest in the good regime and 
 - **Done when:** the robot navigates to arbitrary reachable goals, and path length/reachability are queryable programmatically.
 - **TODO:** recovery behaviours left at Nav2 defaults; controller tuning is sim-only.
 
-### Phase 8 — Cognitive prioritization
-- **Goal:** Dynamic, explainable target selection.
-- **Creates:** `VictimPrioritizer` ABC, `WeightedUtilityPrioritizer`, `NearestVictimPrioritizer`, `prioritizer_node`, weight config.
-- **Depends on:** Phases 6 + 7.
-- **Interfaces:** `SelectTarget`, `/fire_resq/rescue_target`.
-- **Verify:** unit tests on hand-built `WorldState` fixtures — nearest-but-safe vs distant-but-endangered, a victim behind an obstacle scoring lower on accessibility, low confidence deprioritised, `RESCUED` never selected; the two models provably disagree on a constructed scene.
-- **Done when:** stage 6 passes — selection is dynamic, and each decision emits a breakdown explaining itself.
-- **TODO:** static `fire_risk`; no uncertainty, no information gain, no battery term.
+### Phase 8 — Cognitive prioritization ✅ COMPLETE *(built before Phase 7, on the maintainer's instruction; the session called it "Phase 7")*
+> **What "complete" means here, stated plainly.** The robot decides *which victim to rescue next* from its current world model, with the real Nav2 planner supplying path lengths and reachability, and every decision explains itself. It **selects; it does not act** — marking a victim `TARGETED`, navigating and the rest of the loop are Phase 10. The decision quality is only as good as the defaults, which are a stated stance and not a fitted result (see "Decisions" below). **Phase 7 (Nav2 reliability and the path-query helper) is not done**: only the narrow query adapter cognition needs was built.
+
+- **Goal:** dynamic, explainable target selection behind a replaceable interface, with the PRD §11 baseline.
+- **Created:** in `fire_resq_cognition` — a **ROS-free library** (`types`, `config`, `factors`, `prioritizer`: the `VictimPrioritizer` ABC, `WeightedUtilityPrioritizer`, `NearestVictimPrioritizer`, a factory keyed by the `decision_model` parameter), `nav2_path_query.py` (the only place cognition touches navigation, and it only *asks*), `prioritizer_node`, `config/prioritizer.yaml`, `launch/prioritizer.launch.py`. `arena_nav.launch.py` gained opt-in `cognition:=true` and `decision_model:=`. **No interface changed:** `SelectTarget`, `RescueTarget`, `ScoreBreakdown` are used as defined.
+- **Interfaces:** consumes `/fire_resq/world_state` only; asks Nav2's `/compute_path_to_pose`; publishes `/fire_resq/rescue_target` (latched; an empty `victim_id` means nothing selectable, reason in `rationale`), `/fire_resq/decision_report` (latched JSON, below) and serves `/fire_resq/select_target`.
+- **The decision model** (`weighted_utility`). For each candidate (status `DETECTED` or `TARGETED`, reachable out *and* back):
+
+```text
+U =  w_risk           · fire_risk(d_fire)             1 inside the hazard radius (1 m), exp(−(d−1)/1) beyond
+   + w_fire_proximity · (1 − d_fire / extent)         linear over the arena diagonal (7.07 m)
+   + w_reach          · (1 − trip_out / extent)       trip_out = Nav2 path, robot → approach point
+   + w_accessibility  · straight / path               directness of that route, (0, 1]
+   + w_confidence     · perception confidence         from the world model (already decayed)
+   − w_cost           · (trip_out + trip_back) / (2 · extent)     back = approach point → safe zone, also a Nav2 path
+```
+
+  Default weights are priority tiers, **not** fitted numbers: risk 3 (safety) · fire-proximity, reach, cost 1 (practical) · accessibility, confidence 0.5 (tie-breakers). Every weight is a parameter (`weights.*`; a unit test forbids literals in the scoring code); unknown keys, negatives and missing weights fail at start-up. Ties break by cost, then id, deterministically. `nearest` ranks by the same planner's path length, with the same eligibility rules, so the comparison isolates the ranking; it reports the fire/confidence factors but weights none.
+- **Eligibility is explicit.** Not selectable, each with its reason in the decision: `UNKNOWN` (tentative), `CARRIED`, `RESCUED`, `UNREACHABLE` (marked by the rescue side); **no path out or back** (`unreachable` = the planner said so: no path / goal occupied / outside the map); **planner could not be asked** (`unknown`: server missing, timeout, TF error, an exception) — *not* assumed reachable. Nothing eligible ⇒ an empty target and the reasons.
+- **Explanation.** Each decision carries, for every candidate: raw factors (metres, scores), the weighted contributions (which sum exactly to the utility), the rationale string and any exclusion; plus the weights, the selected id, why it decided (world changed / robot moved / retry / refresh) and **the exact world it decided on** (so any decision can be replayed from its own report — a live test does). The node logs the comparison table each time.
+- **Reassessment.** Automatic re-decision when the world model changes (a victim's id/status/position by ≥ 0.15 m, the fire, a new victim), when the robot has moved ≥ 0.5 m (the paths changed), when the last decision was **incomplete** (nothing selectable, or the planner could not be asked: retried every 3 s), and as a slow refresh (15 s) so paths follow the costmap; rate-limited to 1 Hz; also on demand via `SelectTarget`. `TARGETED` stays a candidate, so a re-decision can confirm or change the target (no hysteresis yet: TODO).
+- **Found by the live test, fixed:** the first decision came while Nav2's costmap was still starting ("goal outside the map"), the world then stayed unchanged, and the node kept its empty answer. That is what retry/refresh are for (two node tests pin it). And a multithreaded executor cost **~0.9 cores** under the 250 Hz simulated clock; the planner client now has its own node and thread so the cognition node is single-threaded (**~0.3 cores each**; 0.01 without sim time).
+- **Tests added:** unit — `test_cognition_lib` (47: factors, hand-worked utility, contributions sum to utility, near-safe vs distant-endangered, sign discipline, obstacle → lower accessibility, confidence, cost, no dependence on ids or order, order recomputed each time, every ineligible status, unreachable / no way back / planner unknown or raising, world change → decision change, tie-breaks, explanation JSON, the baseline on its own, factory, agreement with `VictimState.msg`), `test_cognition_config` (8: shipped config valid and equal to the code defaults, every parameter declared, decision logic imports no ROS, no Gazebo/hardware/camera/detector/scenario/perception/world-model/navigation imports, **no victim-id, coordinate or rescue-order literals**, no weight literals, subscribes to `WorldState` only, launch opt-in), `test_prioritization_scenario` (10: the deterministic evaluation below); node — `test_prioritizer_node` (19: a fake Nav2 `ComputePathToPose` server with the real adapter and node — published target and explanation, planner protocol, model by parameter, weights by parameter, reassessment, no decision spam, retry, refresh, `SelectTarget`, unreachable/unknown/missing planner, the adapter's classification, start-up errors); sim — `test_cognition` (7, the whole real stack).
+- **Deterministic evaluation** (`tests/sim/experiments/prioritization_eval.py [--sweep]`; no simulator; the scenario's ground truth as the world — all victims known, `DETECTED`, confidence 1.0 — with A* over the true geometry as the path oracle, *evaluation tooling that the robot never uses*). It reports; it scores and ranks nothing:
+
+| model | selects | victim (ground-truth id) | U | d_fire | risk | trip out | rescue cost | directness |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| weighted utility | **victim_2** | victim_2 | +4.374 | 1.08 m | 0.93 | 4.40 m | 8.80 m | 0.99 |
+| | | victim_1 | +3.043 | 2.48 m | 0.23 | 0.97 m | 1.93 m | 0.98 |
+| | | victim_3 | +2.220 | 2.53 m | 0.22 | 3.50 m | 7.00 m | 0.84 |
+| nearest-first | **victim_1** | victim_1 / victim_3 / victim_2 | −0.97 / −3.50 / −4.40 | (same factor values as above) | | | | |
+
+  They **differ**. Measured causes and sensitivities: take the fire away and both choose victim_1; rescue victim_2 and both then choose victim_1; rescue victim_1 instead and the weighted model chooses victim_2 while nearest chooses victim_3; the weighted choice flips to victim_1 only when `weights.risk` falls to **≈ 1.1** (default 3.0; hazard radius 0.25–2 m and decay 0.25–4 m never flip it). The defaults were fixed before this evaluation was run and not changed afterwards.
+- **Live evaluation** (real world model + real Nav2 planner under AMCL; `test_cognition.py -rP`; the world model's own ids `V1..` matched to ground truth by position only). Two victims known: MVP → victim_2, nearest → victim_1. All three known, robot at the start: MVP **victim_2**, nearest **victim_1**, the same as offline. Live factors (MVP run): victim_2 U +4.00, d_fire 1.09, trip 4.40, cost 8.80, confidence 0.32; victim_1 U +3.05, trip 0.97, cost 1.92, confidence 1.00; victim_3 U +1.50, trip **4.64 m against ~2.9 m straight** (directness **0.63**: the partition's detour, measured by Nav2). After `TARGETED→CARRIED→RESCUED` on the selected victim both nodes re-decided by themselves (MVP and nearest both → victim_1) and listed the rescued one as excluded.
+- **Verification summary:**
+
+| Requirement | Result |
+| --- | --- |
+| Consumes the world model, produces a `RescueTarget` | live: target id is one the world model believes in (`V2`), frame `map`, breakdown, weights, rationale naming every candidate |
+| Asks Nav2, does not plan | live paths ≥ straight line; two queries per candidate; unreachable/unknown/missing planner are excluded with reasons (fake-planner node tests) |
+| Node = library | live: replaying the library on each decision's own reported world and planner answers reproduces the selection and every utility to 1e-6, for both models |
+| Dynamic, not a fixed order | order recomputed each call; label/order permutations give the same choice; a rescue, a new victim, a moved fire or a moved robot each change it |
+| Existing Phase 1–6 tests | **No regression attributable to this phase; two intermittent Phase 4 failures remain, so a fully green run was not obtained.** Complete run after a clean rebuild on a freshly rebooted, healthy host: **372 passed, 1 xfail, 2 failed in 30 min 32 s** (375 tests: 242 unit, 43 node, 90 sim). Every Phase 5–8 test passed. The two failures: `test_navigation_avoids_an_obstacle_it_must_go_round` (the Nav2 detour goal ends ~9 cm from the goal and aborts with "Failed to make progress" after ~28 s) and `test_occupied_cells_lie_on_real_surfaces` (65 % of occupied cells within 5 cm against a 70 % threshold). **Both were measured to be intermittent and independent of this change.** *Same saved map, same host, alternating runs of the whole Nav2 module:* the detour goal passed 2 of 3 and failed 1 of 3 on this tree, and passed 2 of 3 and failed 1 of 3 on the accepted Phase 6 commit. *Map precision over six mapping runs, two per tree:* Phase 5 93.2 / 80.1 %, Phase 6 75.0 / 77.4 %, Phase 7 91.3 / 78.5 % within 5 cm (Phase 4 recorded 76 and 92 %), so the 70 % threshold sits in the low tail of a wide run-to-run spread. Earlier runs in this phase failed more (the Phase 2 motion tests, topic and scan rates, fixture start-up) while the host was stalling (real-time factor swinging 0.3–3, `ros2` CLI calls > 15 s, an 8.5-minute clean build against 17 s after a reboot); those did not recur on the rebooted host. Harness changes made for this: `lifecycle_state()` returns `unknown` on a slow CLI call instead of aborting the wait; message-rate tests count per *simulation* second; `FIRE_RESQ_TEST_MAP` reuses a saved map for A/B experiments. No existing test was weakened or removed |
+
+- **Decisions (flagged in the report):**
+  1. **Numbering.** The plan puts cognition at Phase 8 *after* Nav2 planning (Phase 7); it was built first on request. Only the path-query adapter (`Nav2PathQuery`, the narrow part cognition needs) exists; Phase 7's reliability verification and helper are still open.
+  2. **Two planner queries per candidate** (robot → approach point, approach point → safe zone) where §10 said one: the return leg is a real path, so a victim with no way home is excluded.
+  3. **Accessibility is graded** (straight ÷ planned) instead of {0, 1}: with unreachable victims excluded, a binary term would be constant, and §13's own test needs "behind an obstacle scores lower".
+  4. **`fire_risk` and the weights are stated stances**, not fitted: risk is 1 within a 1 m hazard radius then decays; tiers 3 : 1 : 0.5. The choice is sensitive to `weights.risk` (flip ≈ 1.1). **The maintainer should own these numbers.**
+  5. **Paths are queried to an approach point 0.4 m short of the victim**, not the victim (Nav2 rejects goals inside its inflation; Phase 4). `RescueTarget.approach_pose` carries that point facing the victim as a *provisional* value; the executable approach pose is the FSM's (Phase 10).
+  6. **The full comparison is an untyped JSON topic** (`decision_report`), since `ScoreBreakdown` describes only the selected victim; a typed message is a TODO if a consumer needs one (no interface was changed).
+- **Limitations:** decisions are one-shot with no hysteresis (a near tie can flip the target between re-decisions — `TARGETED` stays a candidate); `fire_risk` is static; confidence is the world model's pixel-count proxy (a victim 5 m away reads ~0.3, so distance is penalised twice: by confidence and by reach/cost — measured, not tuned away); path lengths come from Nav2's costmap, so a victim not yet mapped as an obstacle or a stale costmap gives stale answers until the refresh; two nodes cost ~0.65 cores in simulation (rclpy handling the 250 Hz clock), one node ~0.3; reachability is only as good as the costmap (a planner that says "outside the map" while starting is now retried, but a wrong verdict after start-up is not detected).
+- **TODOs (explicit in code):** Bayesian/uncertainty-aware reasoning; active perception; dynamic fire-risk modelling; battery/resource awareness; decision hysteresis; a typed decision message; learned policy; the executable approach pose (Phase 10).
 
 ### Phase 9 — Rescue mechanism simulation
 - **Goal:** Commandable pickup and release.
@@ -710,6 +757,7 @@ None of these blocks Phases 0–11, which is the point of putting them behind in
 | Colour-blob detection is brittle on real cameras (lighting) | Low in sim, **high on hardware** | Accepted MVP tradeoff behind the `Detector` interface; `YoloDetector` is the hardware answer |
 | `detachable-joint` re-attach semantics differ from expectation | Low | `attach_topic` support confirmed present in 8.15.0; Phase 9 tests it standalone before integration |
 | RGB/depth content lag (~40 ms) corrupts fused positions from a moving camera | Medium — found in Phase 3 | Perception processes while stationary/slow or compensates; robust depth over the blob mask; on hardware prefer aligned depth. Tests use step-and-look |
+| **Two intermittent Phase 4 tests** (`test_navigation_avoids_an_obstacle_it_must_go_round`, `test_occupied_cells_lie_on_real_surfaces`) | **Medium — KNOWN FLAKINESS, unresolved** | Recorded, not hidden, not loosened, not skipped. Measured Phase 5–8: on the *same saved map* the detour goal passed 2 of 3 and failed 1 of 3 on both the Phase 6 commit and the Phase 7 tree (it ends ~9 cm from the goal and the controller aborts "Failed to make progress"); map precision is 75–93 % within 5 cm run to run against a 70 % threshold (65 % and 69 % seen). Independent of cognition. To be investigated in the Nav2-reliability phase (root cause first, thresholds only on physical evidence) |
 | Scope creep from §17 into the MVP | Medium | TODOs live at their attachment points; phase definitions-of-done are the gate |
 
 ## 17. Future TODOs
