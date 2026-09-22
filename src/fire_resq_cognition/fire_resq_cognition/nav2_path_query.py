@@ -9,13 +9,18 @@ and reads back the verdict and the path length. It plans nothing itself. Everyth
 callable `(start_xy, goal_xy) -> PathInfo`.
 
 Classification is deliberately conservative. `unreachable` is reserved for the planner saying so (no path, goal occupied
-or outside the map). Anything that means "could not ask" - server missing, timeout, TF error - is `unknown`, which the
-prioritizers treat as NOT reachable: a broken planner must never turn into an optimistic selection.
+or outside the map) - or for a path that does not actually END at the goal: NavFn is configured with a 0.2 m `tolerance`, so for a
+goal inside a thin obstacle it returns a path to the nearest free cell and calls that success (measured: the centre of the 15 cm
+partition came back "reachable"). A path is only `reachable` if its last pose is within `goal_end_tolerance_m` (one costmap cell)
+of the goal that was asked about; a free goal ends at exactly 0.00 cm. Anything that means "could not ask" - server missing,
+timeout, TF error - is `unknown`, which the prioritizers treat as NOT reachable: a broken planner must never turn into an
+optimistic selection.
 """
 from __future__ import annotations
 
 import math
 import threading
+import time
 from typing import Optional
 
 from action_msgs.msg import GoalStatus
@@ -40,8 +45,8 @@ class Nav2PathQuery:
     from a callback of a single-threaded node. Uses wall time (the private node needs no simulated clock)."""
 
     def __init__(self, action_name: str = '/compute_path_to_pose', frame: str = 'map', planner_id: str = '',
-                 timeout_s: float = 3.0):
-        self.frame, self.planner_id, self.timeout_s = frame, planner_id, timeout_s
+                 timeout_s: float = 3.0, goal_end_tolerance_m: float = 0.05):
+        self.frame, self.planner_id, self.timeout_s, self.goal_end_tolerance_m = frame, planner_id, timeout_s, goal_end_tolerance_m
         self.node = Node('prioritizer_planner_client')
         self.client = ActionClient(self.node, ComputePathToPose, action_name)
         self.executor = SingleThreadedExecutor()
@@ -49,6 +54,7 @@ class Nav2PathQuery:
         self.thread = threading.Thread(target=self._spin, daemon=True)
         self.thread.start()
         self.queries = 0
+        self._down_until = 0.0          # after a failed wait, answer `unknown` at once for a moment instead of waiting per query
 
     def _spin(self) -> None:
         try:
@@ -65,7 +71,10 @@ class Nav2PathQuery:
 
     def __call__(self, start: XY, goal: XY) -> PathInfo:
         self.queries += 1
+        if time.monotonic() < self._down_until:
+            return PathInfo.unknown('planner action server not available')       # do not pay the wait again for every candidate
         if not self.client.wait_for_server(timeout_sec=0.5):
+            self._down_until = time.monotonic() + 2.0
             return PathInfo.unknown('planner action server not available')
         req = ComputePathToPose.Goal()
         req.goal, req.start, req.use_start, req.planner_id = self._pose(goal), self._pose(start), True, self.planner_id
@@ -93,15 +102,20 @@ class Nav2PathQuery:
         if not done.wait(self.timeout_s):
             box['handle'].cancel_goal_async()
             return PathInfo.unknown('planner did not answer in time')
-        return self._classify(box['result'])
+        return self._classify(box['result'], goal, self.goal_end_tolerance_m)
 
     @staticmethod
-    def _classify(res) -> PathInfo:
+    def _classify(res, goal: Optional[XY] = None, end_tolerance_m: float = 0.05) -> PathInfo:
         result = res.result
         code = int(result.error_code)
         poses = result.path.poses
         if res.status == GoalStatus.STATUS_SUCCEEDED and code == R.NONE and len(poses) > 0:
             pts = [(p.pose.position.x, p.pose.position.y) for p in poses]
+            if goal is not None:
+                short = math.hypot(pts[-1][0] - goal[0], pts[-1][1] - goal[1])
+                if short > end_tolerance_m:
+                    return PathInfo.unreachable(f'goal not attainable: the planner\'s path ends {short * 100:.0f} cm short of it '
+                                                '(occupied or inflated goal cell)')
             return PathInfo.reachable(sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])))
         why = result.error_msg or ''
         if code in _UNREACHABLE:

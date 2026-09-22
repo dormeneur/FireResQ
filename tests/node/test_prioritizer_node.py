@@ -202,6 +202,33 @@ def test_the_provisional_approach_pose_is_the_queried_point_facing_the_victim():
         assert 2 * math.atan2(p.pose.orientation.z, p.pose.orientation.w) == pytest.approx(0.0, abs=1e-6)
 
 
+def test_the_target_pose_faces_the_victim_from_any_bearing():
+    with running(world_state([('east', 0.0, 3.0)], fire=None)) as (node, rig, sink, fake):
+        assert wait(lambda: sink.targets and sink.targets[-1].victim_id == 'east')
+        p = sink.targets[-1].approach_pose.pose
+        assert (p.position.x, p.position.y) == pytest.approx((0.0, 2.6), abs=1e-6)                     # 0.4 m short, on the line from the robot
+        assert 2 * math.atan2(p.orientation.z, p.orientation.w) == pytest.approx(math.pi / 2, abs=1e-6)  # facing +y, at the victim
+
+
+def test_select_target_right_after_an_automatic_decision_costs_the_planner_nothing():
+    with running(world_state([NEAR, FAR])) as (node, rig, sink, fake):
+        assert wait(lambda: sink.targets and len(fake.calls) >= 4)
+        time.sleep(0.5)
+        n = len(fake.calls)
+        r = sink.select()
+        assert r.found and r.target.victim_id == 'far-endangered'
+        assert len(fake.calls) == n, 'SelectTarget on an unchanged world asked the planner again'
+        assert node.path_query.hits >= 4
+
+
+def test_a_periodic_refresh_bypasses_the_cache():
+    """The cache must not hide a costmap change: a refresh (or retry) asks the planner afresh."""
+    with running(world_state([NEAR, FAR]), refresh_period_s=1.0) as (node, rig, sink, fake):
+        assert wait(lambda: len(fake.calls) >= 4)
+        n = len(fake.calls)
+        assert wait(lambda: len(fake.calls) >= n + 4, timeout=8.0), 'the refresh did not re-ask the planner'
+
+
 def test_the_planner_is_asked_in_the_world_frame_with_an_explicit_start_out_and_back():
     with running(world_state([FAR])) as (node, rig, sink, fake):
         assert wait(lambda: len(fake.calls) >= 2)
@@ -354,6 +381,24 @@ def test_a_planner_error_code_other_than_no_path_is_unknown_not_unreachable():
         assert not c['eligible'] and 'not assumed reachable' in c['exclusion'] and 'timeout' in c['exclusion']
 
 
+def test_a_missing_planner_is_noticed_once_not_once_per_question():
+    """Waiting half a second for a server that is not there, for each of 2 x N questions, would stall a decision for seconds."""
+    if not rclpy.ok():
+        rclpy.init()
+    q = Nav2PathQuery('/no_such_planner', 'map', '', 1.0)
+    try:
+        t0 = time.time()
+        first = q((0.0, 0.0), (1.0, 0.0))
+        slow = time.time() - t0
+        t1 = time.time()
+        rest = [q((0.0, 0.0), (float(i), 0.0)) for i in range(1, 7)]
+        fast = time.time() - t1
+        assert first.status == 'unknown' and all(r.status == 'unknown' and 'not available' in r.reason for r in rest)
+        assert slow >= 0.4 and fast < 0.2, f'first {slow:.2f}s, the next six {fast:.2f}s'
+    finally:
+        q.destroy()
+
+
 # ------------------------------------------------------------------------------ the adapter's classification, on its own
 def _res(status, code=0, n=0, err=''):
     poses = [SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=float(i), y=0.0))) for i in range(n)]
@@ -361,12 +406,23 @@ def _res(status, code=0, n=0, err=''):
 
 
 def test_the_adapter_measures_the_path_length_and_classifies_the_planners_verdicts():
-    ok = Nav2PathQuery._classify(_res(GoalStatus.STATUS_SUCCEEDED, n=6))
+    ok = Nav2PathQuery._classify(_res(GoalStatus.STATUS_SUCCEEDED, n=6), goal=(5.0, 0.0))
     assert ok.status == 'reachable' and ok.length_m == pytest.approx(5.0)
     for code, expect in ((R.NO_VALID_PATH, 'unreachable'), (R.GOAL_OCCUPIED, 'unreachable'), (R.GOAL_OUTSIDE_MAP, 'unreachable'),
                          (R.TIMEOUT, 'unknown'), (R.TF_ERROR, 'unknown'), (R.START_OCCUPIED, 'unknown'), (R.UNKNOWN, 'unknown')):
         assert Nav2PathQuery._classify(_res(GoalStatus.STATUS_ABORTED, code)).status == expect, code
     assert Nav2PathQuery._classify(_res(GoalStatus.STATUS_SUCCEEDED, n=0)).status == 'unreachable'      # success with no path
+
+
+def test_a_path_that_stops_short_of_the_goal_is_not_reachable():
+    """NavFn's 0.2 m tolerance turns "the goal is inside an obstacle" into a path to the nearest free cell reported as success.
+    Measured live: the centre of the 15 cm partition came back reachable. The adapter checks the path actually ENDS at the goal."""
+    path = _res(GoalStatus.STATUS_SUCCEEDED, n=6)                                            # ends at (5, 0)
+    assert Nav2PathQuery._classify(path, goal=(5.0, 0.0)).status == 'reachable'
+    assert Nav2PathQuery._classify(path, goal=(5.04, 0.0)).status == 'reachable'            # within one 5 cm cell
+    short = Nav2PathQuery._classify(path, goal=(5.15, 0.0))
+    assert short.status == 'unreachable' and 'short' in short.reason and '15 cm' in short.reason
+    assert Nav2PathQuery._classify(path, goal=(5.15, 0.0), end_tolerance_m=0.2).status == 'reachable'   # the tolerance is a parameter
     assert Nav2PathQuery._classify(_res(GoalStatus.STATUS_CANCELED, 0)).status == 'unknown'
 
 

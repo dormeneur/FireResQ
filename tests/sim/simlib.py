@@ -96,7 +96,8 @@ def _pose_tuple(e):
 # Processes that mean "a simulation stack is (still) running". Matched against the command line
 # of real programs only: a shell wrapper (`bash -c '... gz sim ...'`) merely CONTAINING these
 # words - like the one that launched pytest - must not count.
-STACK_RE = (r'gz sim|/lib/(nav2_\w+|slam_toolbox|depthimage_to_laserscan|ros_gz_bridge|robot_state_publisher|rviz2)/'
+STACK_RE = (r'gz sim|/lib/(nav2_\w+|slam_toolbox|depthimage_to_laserscan|ros_gz_bridge|robot_state_publisher|rviz2'
+            r'|fire_resq_perception|fire_resq_world_model|fire_resq_cognition)/'
             r'|async_slam_toolbox_node')
 
 
@@ -168,14 +169,28 @@ def stop_group(proc, wait=10):
         pass
 
 
-def lifecycle_state(node):
-    """A node's lifecycle state, or 'unknown' if it cannot be read right now. A slow `ros2` CLI start-up (a stalling host
-    was measured taking > 15 s) must not abort the wait loop that is polling this: the loop has its own overall timeout."""
+_LIFECYCLE_PROBE = None
+
+
+def lifecycle_state(node, timeout=5.0):
+    """A lifecycle node's state ('active', 'inactive', ...), or 'unknown' if it cannot be read right now.
+
+    Asks the node's own `get_state` service from this process. It used to shell out to `ros2 lifecycle get`, which goes through the
+    ros2 daemon: on a loaded host that call was measured taking more than 15 s, and a fixture polling it for 90 s then failed
+    to see nodes that were perfectly healthy (Nav2 module: 9 setup errors in one otherwise good run)."""
+    global _LIFECYCLE_PROBE
+    from lifecycle_msgs.srv import GetState
+    if _LIFECYCLE_PROBE is None or not _LIFECYCLE_PROBE.context.ok():        # rclpy is shut down and re-initialised between test tiers
+        _LIFECYCLE_PROBE = rclpy.create_node('lifecycle_probe')
+    client = _LIFECYCLE_PROBE.create_client(GetState, f'{node.rstrip("/")}/get_state')
     try:
-        out = subprocess.run(['ros2', 'lifecycle', 'get', node], capture_output=True, text=True, timeout=15).stdout
-    except subprocess.TimeoutExpired:
-        return 'unknown'
-    return out.split()[0] if out.split() else 'unknown'
+        if not client.wait_for_service(timeout_sec=min(timeout, 2.0)):
+            return 'unknown'
+        fut = client.call_async(GetState.Request())
+        rclpy.spin_until_future_complete(_LIFECYCLE_PROBE, fut, timeout_sec=timeout)
+        return fut.result().current_state.label if fut.done() and fut.result() is not None else 'unknown'
+    finally:
+        _LIFECYCLE_PROBE.destroy_client(client)
 
 
 # ------------------------------------------------------------------ ground truth (gz CLI)

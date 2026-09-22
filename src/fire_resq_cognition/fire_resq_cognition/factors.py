@@ -63,3 +63,16 @@ def approach_point(robot: XY, victim: XY, standoff_m: float) -> XY:
         return robot
     f = (d - standoff_m) / d
     return (robot[0] + (victim[0] - robot[0]) * f, robot[1] + (victim[1] - robot[1]) * f)
+
+
+def approach_pose(robot: XY, victim: XY, standoff_m: float) -> Tuple[float, float, float]:
+    """The approach point of `approach_point` plus the heading that faces the victim: (x, y, yaw), in the world frame.
+
+    The contract `RescueTarget.approach_pose` carries (see docs/Implementation_Plan.md, Phase 7 "approach pose contract"): a point `standoff_m` from the
+    victim's CENTRE on the robot->victim line, facing it. Nav2 can plan to it (it is outside the costmap's inflation of the victim);
+    the last stretch to the magnet (ALIGN, Phase 10) is open-loop and not Nav2's."""
+    x, y = approach_point(robot, victim, standoff_m)
+    d = distance((x, y), victim)
+    yaw = math.atan2(victim[1] - y, victim[0] - x) if d > 1e-6 else math.atan2(victim[1] - robot[1], victim[0] - robot[0])
+    return x, y, yaw
+

@@ -77,3 +77,21 @@ def test_global_costmap_is_a_rolling_window_that_always_contains_the_robot(d):
     assert g['rolling_window'] is True
     assert min(g['width'], g['height']) >= 8, 'must cover the 5 m arena diagonal (7.1 m) from any position'
     assert 'static_layer' in g['plugins'], 'the SLAM / saved map must still feed the costmap'
+
+
+def test_the_controller_does_not_latch_arrival_at_the_goal_tolerance(d):
+    """Plan Phase 7 root cause of the intermittent goal failures (see docs/Implementation_Plan.md). RPP takes its arrival radius from the
+    goal checker's xy tolerance - the SAME number the checker needs to see the robot inside - measured a control cycle (and an AMCL
+    update) apart. With RPP's own `stateful` on, it latches 'arrived' the first cycle it is inside and then only ever rotates in place,
+    so if the checker's estimate is a fraction of a centimetre outside at that moment the robot is frozen there until the progress
+    checker aborts. RPP must therefore stay unlatched; the goal CHECKER, which is the judge, keeps its (correct) latch."""
+    c = d['controller_server']['ros__parameters']
+    assert c['FollowPath']['stateful'] is False, 'RPP must not latch xy arrival (see the comment in nav2_params.yaml)'
+    assert c['general_goal_checker']['stateful'] is True
+    assert c['FollowPath']['use_rotate_to_heading'] is True, 'the final heading still needs to be reached'
+
+
+def test_the_progress_checker_still_aborts_a_robot_that_really_is_stuck(d):
+    """Unlatching must not be paid for with a controller that can never give up: a stalled robot still aborts."""
+    pc = d['controller_server']['ros__parameters']['progress_checker']
+    assert 0 < pc['movement_time_allowance'] <= 20 and pc['required_movement_radius'] > 0

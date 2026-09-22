@@ -175,8 +175,13 @@ def _amcl_bring_up(map_yaml, navigation, extra=(), **flags):
                     depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True, wait_map=False, wait_downstream=False, **flags)
     try:
         bot = env.bot
-        bot.wait_for(lambda: lifecycle_state('/map_server') == 'active' and lifecycle_state('/amcl') == 'active',
-                     90, 'map_server and amcl to become active')
+        try:
+            bot.wait_for(lambda: lifecycle_state('/map_server') == 'active' and lifecycle_state('/amcl') == 'active',
+                         90, 'map_server and amcl to become active')
+        except TimeoutError as e:                       # say WHAT was seen: a bare timeout hid the cause of a flaky bring-up
+            log = [ln[-200:] for ln in env.sim.log().splitlines() if any(k in ln for k in ('map_server', 'amcl', '[ERROR]', 'lifecycle'))]
+            raise TimeoutError(f'{e}; map_server={lifecycle_state("/map_server")!r}, amcl={lifecycle_state("/amcl")!r}; '
+                               'relevant launch log:\n  ' + '\n  '.join(log[-14:])) from e
         pub = bot.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         m = PoseWithCovarianceStamped()
         m.header.frame_id = 'map'

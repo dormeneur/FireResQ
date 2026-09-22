@@ -22,6 +22,8 @@ prioritizer_node:
     position_change_m: 0.15                # a victim or the fire moving this far counts as a change
     retry_period_s: 3.0                    # after an incomplete decision (nothing selectable, or the planner could not be asked)
     refresh_period_s: 15.0                 # re-ask the planner at least this often, so paths follow the costmap
+    path_cache_ttl_s: 15.0                 # a REACHABLE answer is reused for this long (0 disables); unreachable/unknown are never cached
+    path_cache_quantum_m: 0.05             # start/goal are matched to this resolution (the costmap's)
 
     # ---- the decision model ---------------------------------------------------------------------
     # Priority tiers, not fitted numbers (see config.py): safety first, practicality second, tie-breakers third.

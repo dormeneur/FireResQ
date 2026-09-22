@@ -63,6 +63,14 @@ controller_server:
       regulated_linear_scaling_min_speed: 0.1
       use_cost_regulated_linear_velocity_scaling: false
       use_rotate_to_heading: true
+      # NOT latched. RPP's own `stateful` (default true) latches "the xy tolerance has been reached" the first cycle its distance to the
+      # goal drops below the goal checker's xy_goal_tolerance, and from then on ONLY rotates in place (linear velocity 0) - even if the
+      # distance later grows past the tolerance. The goal checker meanwhile needs ITS OWN evaluation to see the robot inside the
+      # tolerance. The two are the same radius measured a control cycle (and, once the robot starts turning, an AMCL update) apart, so
+      # when the checker's estimate is a fraction of a centimetre outside at that moment the robot is frozen outside it until the
+      # progress checker aborts (measured, plan Phase 7: 12-44 % of goals at the 10 cm tolerance edge, e.g. the detour goal). Unlatched,
+      # the controller resumes creeping in whenever the estimate is outside, until the checker (which latches correctly) is satisfied.
+      stateful: false
       rotate_to_heading_min_angle: 0.6
       rotate_to_heading_angular_vel: 1.0 # RENDERED (fraction of max_angular_velocity)
       max_angular_accel: 3.0             # RENDERED

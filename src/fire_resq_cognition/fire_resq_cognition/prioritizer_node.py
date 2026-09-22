@@ -24,8 +24,9 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from .config import DEFAULT_WEIGHTS, WEIGHT_NAMES, PrioritizerConfig
-from .factors import distance
+from .factors import approach_pose, distance
 from .nav2_path_query import Nav2PathQuery
+from .path_cache import CachedPathQuery
 from .prioritizer import make_prioritizer
 from .types import CANDIDATE_STATUSES, Decision, PlanningContext, VictimView, WorldView
 
@@ -49,7 +50,7 @@ class PrioritizerNode(Node):
                           ('planner_action', '/compute_path_to_pose'), ('planner_id', ''), ('world_frame', 'map'),
                           ('path_query_timeout_s', 3.0), ('auto_reassess', True), ('reassess_period_s', 1.0),
                           ('requery_distance_m', 0.5), ('position_change_m', 0.15), ('retry_period_s', 3.0),
-                          ('refresh_period_s', 15.0)):
+                          ('refresh_period_s', 15.0), ('path_cache_ttl_s', 15.0), ('path_cache_quantum_m', 0.05)):
             self.declare_parameter(name, val)
         for k, v in _DEFAULTS_SCALAR.items():
             self.declare_parameter(k, v)
@@ -67,8 +68,9 @@ class PrioritizerNode(Node):
 
         # The planner client has its own node and thread, so a decision may block on a query inside a callback of this
         # single-threaded node without starving the planner's replies.
-        self.path_query = path_query or Nav2PathQuery(p('planner_action').value, self.world_frame, p('planner_id').value,
-                                                      float(p('path_query_timeout_s').value))
+        inner = path_query or Nav2PathQuery(p('planner_action').value, self.world_frame, p('planner_id').value,
+                                            float(p('path_query_timeout_s').value))
+        self.path_query = CachedPathQuery(inner, float(p('path_cache_ttl_s').value), float(p('path_cache_quantum_m').value))
         self.ctx = PlanningContext(self.path_query)
         self.lock = threading.Lock()                                # one decision at a time (timer vs service)
         self.world_msg: Optional[WorldState] = None
@@ -134,11 +136,14 @@ class PrioritizerNode(Node):
         try:
             why = ('the world model changed' if changed else 'the robot moved' if moved else
                    'the last decision was incomplete' if retry else 'periodic refresh of the paths')
-            self._decide(w, why)
+            self._decide(w, why, fresh=retry or (refresh and not changed and not moved))
         finally:
             self.lock.release()
 
-    def _decide(self, w: WorldView, why: str) -> Decision:
+    def _decide(self, w: WorldView, why: str, fresh: bool = False) -> Decision:
+        if fresh:
+            self.path_query.invalidate()             # a retry or refresh exists to hear the planner's CURRENT answer
+        asked0, hits0 = self.path_query.asked, self.path_query.hits
         d = self.prioritizer.select(w, self.ctx)
         self.decisions += 1
         self.last_world = {'victims': {v.id: (v.status, v.x, v.y) for v in w.victims}, 'fire_known': w.fire_known, 'fire': w.fire_xy}
@@ -154,7 +159,8 @@ class PrioritizerNode(Node):
                            'safe_zone': list(w.safe_zone_xy),          # the exact input, so the decision can be replayed from its own report
                            'victims': [{'id': v.id, 'x': v.x, 'y': v.y, 'confidence': v.confidence, 'status': v.status} for v in w.victims]}
         self.report_pub.publish(String(data=json.dumps(report)))
-        self.get_logger().info(f'decision #{self.decisions} ({why})\n{self._table(d)}')
+        self.get_logger().info(f'decision #{self.decisions} ({why}; planner asked {self.path_query.asked - asked0}x, '
+                               f'{self.path_query.hits - hits0} answers from memory)\n{self._table(d)}')
         return d
 
     def _on_select(self, req: SelectTarget.Request, res: SelectTarget.Response):
@@ -181,9 +187,8 @@ class PrioritizerNode(Node):
         t.victim_id, t.utility = s.victim_id, float(s.utility)
         # Provisional: the point the planner was asked about, facing the victim. The executable approach pose (magnet
         # standoff, alignment) is the rescue FSM's to compute in Phase 10.
-        ax, ay = s.approach_xy
+        ax, ay, yaw = approach_pose(w.robot_xy, s.position, self.prioritizer.cfg.approach_standoff_m)
         t.approach_pose.pose.position.x, t.approach_pose.pose.position.y = ax, ay
-        yaw = math.atan2(s.position[1] - ay, s.position[0] - ax) if distance((ax, ay), s.position) > 1e-6 else w.robot_yaw
         t.approach_pose.pose.orientation.z, t.approach_pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         f = s.factors
         b = ScoreBreakdown()
