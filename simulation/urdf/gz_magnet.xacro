@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  Gazebo electromagnet wiring: one DetachableJoint plugin instance per victim in the scenario.
+
+  SIMULATION ONLY. Nothing here is used on the physical robot; the real electromagnet is a
+  MOSFET/relay switched by the ESP32 (Phase 12), behind the SAME fire_resq_control abstraction
+  this feeds via the ROS topics named below.
+
+  WHY ONE PLUGIN PER VICTIM. gz-sim's DetachableJoint plugin is wired to exactly one named
+  `child_model` at SDF-parse time; it cannot be retargeted at runtime, and (measured, Phase 9 -
+  see docs/Implementation_Plan.md) it has NO distance or contact check of its own: telling it to
+  attach welds a rigid joint at whatever separation currently exists, even metres away, with no
+  warning. So the ROBOT declares one detachable joint per scenario victim, each on its own
+  attach/detach/state topics, and it is `sim_magnet_bridge.py` (fire_resq_simulation) - not this
+  file, not Gazebo - that decides WHICH one (if any) is actually within the magnet's reach before
+  it ever asks Gazebo to attach anything.
+
+  WHY `parent_link` IS `base_link`, NOT `magnet_link` (measured, Phase 9). Spawning the robot via
+  `ros_gz_sim create -topic robot_description` converts the URDF to SDF with fixed-joint
+  reduction: every link joined to base_link by a `type="fixed"` joint - magnet_link, camera_link,
+  caster_link - is lumped INTO base_link and does not exist as its own entity at runtime (`gz
+  model -m fire_resq` lists only base_link, left_wheel_link, right_wheel_link). A DetachableJoint
+  `parent_link` naming a lumped-away link fails outright ("Link with name magnet_link not found in
+  model fire_resq"). `<gazebo reference="camera_link"><sensor>` still works because sensors are
+  placed by that reference at load time regardless of whether the link survives; a joint plugin
+  needs an actual queryable link, which only base_link (and the wheels) still are. The magnet's
+  offset from base_link (magnet_x, magnet_z, parameters.xacro) is applied in Python instead -
+  fire_resq_simulation.magnet_geometry, already written that way. Physically this changes nothing:
+  magnet_link was itself rigidly fixed to base_link, so a joint anchored at base_link's current
+  pose is indistinguishable from one anchored at magnet_link's.
+
+  `victim_names` is a space-separated list of the scenario's victim model names, supplied by
+  arena.launch.py when `magnet:=true` (empty by default: no plugins, robot unchanged - see
+  sim.launch.py). xacro has no native "for each" over a runtime list, so this uses the standard
+  recursive-macro trick (peel one name, recurse on the rest); verified empirically to produce
+  exactly one block per name and zero blocks for an empty string.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="victim_magnet_plugins" params="names">
+    <xacro:if value="${names != ''}">
+      <xacro:property name="_magnet_parts" value="${names.split(' ', 1)}" lazy_eval="true"/>
+      <xacro:property name="_magnet_head" value="${_magnet_parts[0]}" lazy_eval="true"/>
+      <xacro:property name="_magnet_tail" value="${_magnet_parts[1] if len(_magnet_parts) > 1 else ''}" lazy_eval="true"/>
+
+      <gazebo>
+        <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+          <parent_link>base_link</parent_link>
+          <child_model>${_magnet_head}</child_model>
+          <child_link>base_link</child_link>
+          <!-- Gazebo-side topic names carry the victim's own model name, so
+               sim_magnet_bridge.py can address one victim without touching the rest. -->
+          <attach_topic>/model/fire_resq/magnet/${_magnet_head}/attach</attach_topic>
+          <detach_topic>/model/fire_resq/magnet/${_magnet_head}/detach</detach_topic>
+          <output_topic>/model/fire_resq/magnet/${_magnet_head}/state</output_topic>
+        </plugin>
+      </gazebo>
+
+      <xacro:victim_magnet_plugins names="${_magnet_tail}"/>
+    </xacro:if>
+  </xacro:macro>
+
+</robot>

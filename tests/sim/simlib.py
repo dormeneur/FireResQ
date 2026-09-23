@@ -97,8 +97,8 @@ def _pose_tuple(e):
 # of real programs only: a shell wrapper (`bash -c '... gz sim ...'`) merely CONTAINING these
 # words - like the one that launched pytest - must not count.
 STACK_RE = (r'gz sim|/lib/(nav2_\w+|slam_toolbox|depthimage_to_laserscan|ros_gz_bridge|robot_state_publisher|rviz2'
-            r'|fire_resq_perception|fire_resq_world_model|fire_resq_cognition)/'
-            r'|async_slam_toolbox_node')
+            r'|fire_resq_perception|fire_resq_world_model|fire_resq_cognition|fire_resq_control)/'
+            r'|async_slam_toolbox_node|sim_magnet_bridge')
 
 
 def stray_sim_processes():
@@ -257,6 +257,29 @@ def entity_poses(names, timeout=25):
             return found
         time.sleep(0.5)
     return found
+
+
+def teleport(name, x, y, yaw, z=None, retries=3):
+    """Set a model's true pose directly (test-only: ground truth is never fed back into a ROS
+    topic outside this). Used to put the robot at a precise, known separation from a victim
+    without an imprecise/slow cmd_vel drive - the Phase 9 magnet tests need contact-range
+    accuracy cmd_vel driving cannot promise (Phase 7: goals end 6-14 cm from where they were
+    aimed). Retried: like every other `gz`/`ros2` CLI call in this harness, `gz service` can time
+    out on a transiently slow host (see "Test reliability" in CLAUDE.md) without the simulation
+    itself being unhealthy."""
+    z_line = f', z: {z}' if z is not None else ''
+    qz, qw = math.sin(yaw / 2), math.cos(yaw / 2)
+    req = (f'name: "{name}", position: {{x: {x}, y: {y}{z_line}}}, '
+           f'orientation: {{x: 0, y: 0, z: {qz}, w: {qw}}}')
+    last = None
+    for _ in range(retries):
+        r = subprocess.run(['gz', 'service', '-s', f'/world/{WORLD}/set_pose', '--reqtype', 'gz.msgs.Pose',
+                            '--reptype', 'gz.msgs.Boolean', '--timeout', '8000', '--req', req],
+                           capture_output=True, text=True, timeout=12)
+        if 'true' in r.stdout:
+            return
+        last = r
+    assert False, f'set_pose({name}) failed after {retries} attempts: {last.stdout!r} {last.stderr!r}'
 
 
 # ------------------------------------------------------------------ colour classes

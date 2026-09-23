@@ -5,6 +5,7 @@
   ros2 launch fire_resq_simulation arena.launch.py use_depth:=false    # RGB-only robot
   ros2 launch fire_resq_simulation arena.launch.py scenario:=/path/to/other.yaml
   ros2 launch fire_resq_simulation arena.launch.py perception:=true    # + /fire_resq/detections (in `odom`: no SLAM here)
+  ros2 launch fire_resq_simulation arena.launch.py magnet:=true        # + /fire_resq/set_magnet, /fire_resq/magnet/state
 
 The world is regenerated from the scenario YAML on every launch, and generation is
 deterministic (same YAML -> byte-identical SDF), so the same command always starts the same
@@ -36,6 +37,7 @@ def _setup(context, *args, **kwargs):
         scenario, Path(tempfile.gettempdir()) / 'fire_resq_worlds' / f'{scenario.name}.sdf',
         overview_camera=overview)
 
+    magnet = LaunchConfiguration('magnet').perform(context).lower() == 'true'
     s = scenario.robot_start
     actions = [
         # Lets <include><uri>model://victim</uri> and model://fire resolve.
@@ -49,8 +51,24 @@ def _setup(context, *args, **kwargs):
                 'use_rviz': LaunchConfiguration('use_rviz').perform(context),
                 'use_depth': LaunchConfiguration('use_depth').perform(context),
                 'camera_hfov': LaunchConfiguration('camera_hfov').perform(context),
+                # Off by default (see gz_magnet.xacro): only wire the electromagnet plugins when asked.
+                'victim_names': ' '.join(v.id for v in scenario.victims) if magnet else '',
             }.items()),
     ]
+    if magnet:
+        # The Phase 9 electromagnet: magnet_node (hardware-neutral, fire_resq_control) talks only
+        # to the two standard topics sim_magnet_bridge.py (Gazebo-specific, fire_resq_simulation)
+        # implements on the other end - see fire_resq_control/magnet_backend.py.
+        actions.append(Node(
+            package='fire_resq_simulation', executable='sim_magnet_bridge.py', name='sim_magnet_bridge',
+            output='screen', parameters=[{
+                'use_sim_time': True,
+                'victim_names': ' '.join(v.id for v in scenario.victims),
+            }]))
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(str(Path(get_package_share_directory('fire_resq_control'))
+                                             / 'launch' / 'magnet.launch.py')),
+            launch_arguments={'use_sim_time': 'true'}.items()))
     if LaunchConfiguration('perception').perform(context).lower() == 'true':
         # Scoped: the perception launch's own arguments (use_sim_time, target_frame, ...) must not leak into the
         # arguments of whatever included this file (see arena_nav.launch.py).
@@ -87,5 +105,8 @@ def generate_launch_description():
         DeclareLaunchArgument('spatial_backend', default_value='auto', description='auto | depth | known_height'),
         DeclareLaunchArgument('overview_camera', default_value='false',
                               description='DEBUG: add a top-down camera on /overview/image_raw.'),
+        DeclareLaunchArgument('magnet', default_value='false',
+                              description='Also wire the electromagnet: sim_magnet_bridge + magnet_node '
+                                          '(/fire_resq/set_magnet, /fire_resq/magnet/state).'),
         OpaqueFunction(function=_setup),
     ])

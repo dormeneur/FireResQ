@@ -349,9 +349,9 @@ What changes at Phase 12, and nothing else:
 | `cmd_vel` consumer | `gz` `diff-drive` plugin | `esp32_bridge_node` → serial → motor driver |
 | `/odom` + `odom`→`base_link` | `diff-drive` plugin odometry | Encoder ticks → differential kinematics |
 | Camera streams | `ros_gz_image` bridge | `v4l2_camera` or RealSense driver |
-| Magnet backend | `detachable-joint` topics | GPIO → MOSFET |
+| Magnet backend | `sim_magnet_bridge.py` (`fire_resq_simulation`) on `detachable-joint` topics | ESP32 bridge (`fire_resq_hardware`, Phase 12, TODO) on GPIO → MOSFET |
 
-`magnet_node` is written from Phase 9 with a backend interface (`SimMagnetBackend`, `Esp32MagnetBackend`) precisely so Phase 12 adds a class rather than editing the node. Hardware-specific code is confined to `fire_resq_hardware`; a Phase 10 guard test asserts no cognition/planning module imports it.
+`magnet_node` (Phase 9, `fire_resq_control`) is written against `RosTopicMagnetBackend`, which talks only to two standard topics (`/fire_resq/magnet/energize`, `/fire_resq/magnet/state`) - the extension point for Phase 12 is a new NODE speaking the same two topics on real GPIO, not a new Python class in `fire_resq_control` (a deliberate departure from this table's original one-line sketch; see docs/Implementation_Plan.md Phase 9 "Decisions"). Hardware-specific code is confined to `fire_resq_hardware`; a Phase 10 guard test asserts no cognition/planning module imports it, and a Phase 9 guard test asserts `fire_resq_control` imports neither Gazebo nor `fire_resq_hardware`.
 
 A watchdog/failsafe is mandatory before any autonomous physical run ([../docs/Hardware_Integration.md](Hardware_Integration.md)) and is Phase 12 scope, not optional polish.
 
@@ -679,14 +679,142 @@ U =  w_risk           · fire_risk(d_fire)             1 inside the hazard radiu
 - **Limitations:** decisions are one-shot with no hysteresis (a near tie can flip the target between re-decisions — `TARGETED` stays a candidate); `fire_risk` is static; confidence is the world model's pixel-count proxy (a victim 5 m away reads ~0.3, so distance is penalised twice: by confidence and by reach/cost — measured, not tuned away); path lengths come from Nav2's costmap, so a victim not yet mapped as an obstacle or a stale costmap gives stale answers until the refresh; two nodes cost ~0.65 cores in simulation (rclpy handling the 250 Hz clock), one node ~0.3; reachability is only as good as the costmap (a planner that says "outside the map" while starting is now retried, but a wrong verdict after start-up is not detected).
 - **TODOs (explicit in code):** Bayesian/uncertainty-aware reasoning; active perception; dynamic fire-risk modelling; battery/resource awareness; decision hysteresis; a typed decision message; learned policy; the executable approach pose (Phase 10).
 
-### Phase 9 — Rescue mechanism simulation
-- **Goal:** Commandable pickup and release.
-- **Creates:** `detachable-joint` wiring in the victim models; `MagnetBackend` ABC + `SimMagnetBackend`; `magnet_node`.
-- **Depends on:** Phase 2.
-- **Interfaces:** `SetMagnet`, `/fire_resq/magnet/state`.
-- **Verify:** manual attach/release by service call; the victim tracks the robot while carried and stays put after release; state reporting matches reality including a failed attach at excessive distance.
-- **Done when:** stage 8's mechanism works in isolation, ahead of FSM integration.
-- **TODO:** `Esp32MagnetBackend` unimplemented; no holding-force model.
+### Phase 9 — Rescue mechanism simulation ✅ COMPLETE
+> **What "complete" means here, stated plainly.** The electromagnet can be commanded ATTACH/RELEASE through one hardware-neutral
+> interface, and in simulation it genuinely picks a victim up (a real Gazebo joint forms, the victim tows with the robot,
+> release drops it exactly where it was) - verified against Gazebo's own physics, not just a service response. It does **not**
+> decide which victim to approach, does not navigate, and does not compute the executable approach pose or the `ALIGN` creep to
+> get the robot into contact range autonomously - that is Phase 10's, and this phase's own tests reach contact by teleporting
+> the robot there (ground truth, test-only), exactly as the existing plan's "works in isolation, ahead of FSM integration"
+> anticipated.
+
+- **Goal:** Commandable pickup and release, behind an interface the rescue FSM can use without knowing whether it is talking to
+  Gazebo or a real coil.
+- **Interfaces reused, not invented:** `SetMagnet` (`bool attach` -> `bool success, MagnetState state`) and
+  `/fire_resq/magnet/state` already existed in `fire_resq_interfaces`, exactly as the plan named them; nothing was added there
+  except a comment on `MagnetState.victim_id` (below). One new low-level topic, `/fire_resq/magnet/energize` (`std_msgs/Bool`),
+  exists only between `magnet_node` and whichever driver is running - it is not part of the interface cognition or the FSM see.
+- **Where the abstraction actually lives (a deliberate departure from the phase's original one-line sketch, which put
+  `SimMagnetBackend` inside `fire_resq_control` - see "Decisions" below).**
+  ```text
+  magnet_node (fire_resq_control, hardware-neutral)
+      <-- SetMagnet -- rescue FSM (Phase 10)
+      -- MagnetBackend.attach()/detach() --> RosTopicMagnetBackend
+                                                  -- /fire_resq/magnet/energize (Bool) -->
+                                                  <-- /fire_resq/magnet/state (MagnetState) --
+                                              sim_magnet_bridge.py (fire_resq_simulation, TODAY)
+                                              or the ESP32 bridge (fire_resq_hardware, Phase 12, TODO)
+  ```
+  `RosTopicMagnetBackend` talks to nothing but those two standard topics - exactly the shape `cmd_vel`/`odom` already use to make
+  the sim/hardware swap a driver change, not a code change (`simulation/urdf/gz_drive.xacro`'s own docstring says so). The
+  extension point for Phase 12 is a NEW NODE in `fire_resq_hardware` implementing the same two topics on real GPIO, not a new
+  Python class here - `fire_resq_control` never imports Gazebo or hardware code (unit-guarded,
+  `test_control_stays_hardware_and_simulator_agnostic`).
+- **Why Gazebo needs a bridge node at all, and why it needs to be this specific one (measured, not assumed):**
+  1. **`gz-sim`'s `DetachableJoint` system plugin has NO distance or contact check.** Telling it to attach welds a rigid joint at
+     whatever separation currently exists between `parent_link` and `child_model` - even two metres apart, silently, no error
+     (measured directly: a victim placed 2 m from the robot and told to attach became a rigid extension of it at that gap).
+     So something has to decide WHICH victim (if any) is actually close enough before ever asking Gazebo to attach anything -
+     that is `sim_magnet_bridge.py`'s whole job, using live ground truth (legitimate here: this is simulation-side code, not
+     something cognition depends on) and the contact geometry below.
+  2. **Every declared `DetachableJoint` instance starts ATTACHED by default** (it is built for "breadcrumbs": carried from the
+     start, dropped on command). Left alone, every victim in the scenario would be rigidly welded to the robot from the first
+     physics step. `sim_magnet_bridge.py`'s first job, before accepting any command, is to detach all of them (retried for 3 s,
+     since its own detach messages can arrive before the plugin's subscriber exists). Asserted:
+     `test_no_victim_starts_attached`.
+  3. **The plugin can only be wired to one `child_model` at SDF-parse time** and cannot be retargeted at runtime, so the ROBOT
+     declares one `DetachableJoint` instance per scenario victim (`simulation/urdf/gz_magnet.xacro`, a recursive xacro macro -
+     xacro has no native "for each" over a runtime list), each on its own attach/detach/state topic named after that victim's
+     scenario id. Wiring is generated from the scenario the same way fire/victims/obstacles already are (simulation-side code
+     legitimately reads it); the robot xacro takes a space-separated `victim_names` arg, empty by default (byte-identical robot
+     description for every existing launch call site - `arena.launch.py` only fills it in when the new `magnet:=true` opt-in is
+     given, following the same off-by-default pattern as `perception`/`world_model`/`cognition`).
+  4. **`parent_link` has to be `base_link`, not `magnet_link` (measured the hard way).** Spawning the robot via
+     `ros_gz_sim create -topic robot_description` converts the URDF to SDF with fixed-joint reduction: every link joined to
+     `base_link` by a `type="fixed"` joint - `magnet_link`, `camera_link`, `caster_link` - is lumped INTO `base_link` and does
+     not exist as its own entity at runtime (`gz model -m fire_resq` lists only `base_link`, `left_wheel_link`,
+     `right_wheel_link`). A `DetachableJoint` naming `magnet_link` fails outright: `"Link with name magnet_link not found in
+     model fire_resq"`. Sensors survive this because `<gazebo reference="camera_link"><sensor>` places a sensor by that
+     reference at load time regardless of whether the link itself survives; a joint plugin needs an actual queryable link,
+     which only `base_link` (and the wheels) still are. Physically this changes nothing - `magnet_link` was itself rigidly
+     fixed to `base_link` - so the magnet's offset (`magnet_x`, `magnet_length`, `parameters.xacro`) is applied in Python
+     instead (`fire_resq_simulation.magnet_geometry`), never restated as a literal.
+- **Contact geometry** (`fire_resq_simulation/magnet_geometry.py`, pure Python, no ROS): the magnet's front face is
+  `magnet_x + magnet_length / 2` ahead of `base_link` along whatever the robot is actually facing (not just the victim's local
+  axis - the ring is radially symmetric, matching the victim model's own "meets metal at any approach bearing" claim). Contact
+  distance (centre-to-centre, flush) is **0.131 m** - the SAME number Phase 7/8's standoff-feasibility guard derives
+  independently from the same robot/victim geometry (`tests/unit/test_cognition_cache.py`); a dedicated test
+  (`test_contact_distance_matches_the_documented_0_131_m`) pins the two together. A victim is a legitimate attach target only
+  within **2 cm** of that distance (`CONTACT_TOLERANCE_M`) - deliberately tight: a real electromagnet's effective range is a
+  couple of millimetres, and a generous tolerance would let the sim attach victims the real robot could not reach.
+- **State machine / safety.** `MagnetNode.SetMagnet` never reports `success=True` just because a request was accepted: it
+  publishes the energize command, blocks (on its own private node/thread, the same reason `Nav2PathQuery` does - Phase 7/8) for
+  the driver's next state update, and `success` is true only if that update actually shows the requested outcome
+  (`state.attached == request.attach`). A driver that never answers (missing, or genuinely could not find a victim) times out
+  or reports the honest failure - never silently upgraded to success (unit-guarded by the node tests below, and by design: see
+  `magnet_node.py`'s docstring).
+- **`MagnetState.victim_id` is provenance, not a world-model id (documented, exactly the `Detection.source_backend` pattern).**
+  In simulation it is Gazebo's own model name (`"victim_2"`), unrelated to `fire_resq_world_model`'s `V1/V2/V3` ids (Phase 6).
+  The rescue FSM (Phase 10) must track which victim IT intended to pick up from its own state and treat `attached` alone as the
+  physical confirmation - a comment on the message field says so explicitly, so this cannot be quietly assumed away later.
+- **Physically verified** (`tests/sim/test_magnet.py`, judged against Gazebo's true pose, not the service response):
+  - No victim starts attached (all three at their exact scenario spawn poses before any command).
+  - Attach is refused, cleanly, with nothing in range: `success=False`, `energized=True`, `attached=False`.
+  - Attach at contact range succeeds and reports the right victim id; while carried it tows in **exact lockstep** with the
+    robot (measured: robot travelled 0.476 m, the towed victim travelled the identical distance to 3 decimal places); the two
+    untouched victims never move (< 1 cm) - no duplicate association.
+  - A second attach request while already carrying one victim does not grab a different one, even when driven right up next to
+    it - `victim_id` stays the first victim's the whole time.
+  - Release drops the victim exactly where it was (< 1 cm of drift) and the robot can still drive afterward (measured 0.38 m
+    reverse travel) - driving forward INTO the just-released victim is blocked by ordinary contact physics, not a magnet bug
+    (measured separately while investigating: reversing or driving from further back both moved the robot freely; the sim
+    tests drive away from the victim, matching what the rescue FSM's own `RETURN`/`REASSESS` will do).
+- **Limitations (explicit, not hidden):**
+  1. No holding-force model: the joint is rigid regardless of victim mass, speed or turning - a real electromagnet could drop a
+     victim under load that this simulation cannot represent (Hardware.md's own open TODO).
+  2. No recovery if a victim is dropped mid-transport (a later, explicit TODO, same family as the project's other recovery
+     TODOs).
+  3. `Esp32MagnetBackend`'s hardware side does not exist (TODO(phase-12)); no fake hardware behaviour was written in its place.
+  4. Getting the robot into contact range autonomously (the open-loop `ALIGN` creep) is Phase 10's; this phase's tests reach
+     contact by teleporting the robot there (ground truth, test-only - never fed back into a ROS topic).
+  5. `sim_magnet_bridge.py` re-checks proximity only at the moment `energize` transitions, not continuously - correct for a
+     robot that ALIGNs then commands ATTACH once (the planned Phase 10 sequence), not for "creep until contact is detected".
+- **A test flake found and fixed AFTER the first full regression passed (measured, not assumed).** Re-running
+  `test_magnet.py` alone, twice more, produced two different intermittent failures the full run hadn't hit: `gz service`
+  timing out under host load (the same class of CLI slowness CLAUDE.md already documents for `ros2`), and - the real
+  finding - **the sim tests were placing the robot at `gap_m=0.0`, the mathematical EDGE of the 2 cm contact tolerance, not
+  a point safely inside it.** A victim's position drifts by a fraction of a millimetre between two independent ground-truth
+  reads (`entity_poses`, used to compute the teleport target, and `sim_magnet_bridge.py`'s own pose stream, read at attach
+  time), which is harmless anywhere except exactly on a tolerance boundary. **Fixed in the tests, not the production
+  code:** `simlib.teleport()` now retries on a transient CLI timeout (an 8 s per-attempt budget instead of 2 s, matching
+  other `gz`/`ros2` calls in this harness); the sim tests confirm ground truth actually reflects a teleport before acting
+  on it; and the attach-should-succeed tests place the robot 1 cm past flush (`gap_m=-0.01`) - comfortably inside the
+  tolerance, not balanced on its edge. `CONTACT_TOLERANCE_M` itself is untouched at 2 cm. Confirmed clean over three
+  consecutive standalone runs of `test_magnet.py` after the fix, then in the full regression below.
+- **Decisions (flagged, as the report structure requires):**
+  1. **`SimMagnetBackend` was placed in `fire_resq_simulation`, not `fire_resq_control`** as the phase's original one-line
+     sketch said. Reasoning above: every other Gazebo-specific thing in this project (worlds, launch, the `<gazebo>` xacro
+     overlay) already lives outside the reusable/hardware-shared packages, and `fire_resq_control` staying import-clean of
+     Gazebo is itself a hard rule elsewhere in the project (cognition/planning). The result is a package split that already
+     matches `cmd_vel`/`odom`'s, not a new pattern.
+  2. **Contact tolerance (2 cm) and the "one bridge node arbitrates by ground truth" design are stated engineering choices**,
+     not derived from a spec - there is no measured real-electromagnet holding force or range yet (Hardware.md's own open
+     item). Revisit once real hardware numbers exist.
+- **Tests and results:** 11 new unit (`test_magnet_geometry.py`: contact geometry math, the ring-radius/contact-distance
+  constants pinned against the SDF and Phase 7/8's own derivation, and the recursive xacro macro rendering 0/1/3 plugin blocks
+  correctly, anchored on `base_link`; plus one new architecture guard), 6 new node (`test_magnet_node.py`: a fake driver stands
+  in for `sim_magnet_bridge.py`, in-process, no Gazebo - attach/detach success and failure, a missing driver failing cleanly,
+  and a deliberately slow driver proving the service actually waits rather than racing it), 6 new sim
+  (`test_magnet.py`, above). **Final complete regression after a clean rebuild, real-time factor 1.0 throughout: 424 passed,
+  2 xfailed, 0 failed, 0 errors in 34 min 56 s** (426 tests: 266 unit, 54 node, 106 sim) - reproduced twice at this exact
+  count. An intermediate full run (after the test-flake fix above, before this final confirmation) saw 2 failures in
+  `test_modes.py` and `test_perception.py` - both pre-existing tests untouched by this phase, neither about the magnet;
+  standalone reruns of both modules passed cleanly once host load (uptime ~19.5 h; matches the "stalling host" pattern
+  CLAUDE.md's "Test reliability" already documents) had settled, and the very next full run reproduced the same clean 424/2/0/0.
+  The two xfails throughout are the unchanged, previously recorded limitations (SLAM+Nav2 concurrency; a goal inside a solid
+  block reported reachable). No existing Phase 1–8 test was touched or weakened; no stray processes after any teardown.
+- **TODO:** the ESP32 hardware bridge (Phase 12); a holding-force model; recovery from a dropped victim; the executable
+  approach pose and `ALIGN` creep (Phase 10).
 
 ### Phase 10 — Complete autonomous rescue loop
 - **Goal:** The [../PRD.md](../PRD.md) §14 deliverable.
@@ -770,9 +898,9 @@ None of these blocks Phases 0–11, which is the point of putting them behind in
 | The robot is blind behind itself (forward-only depth wedge) | Medium | No reversing/BackUp anywhere; recovery from failed navigation is a later TODO that needs a sensing answer first |
 | WSL2 rendering too slow for camera/depth sensors | Medium — would slow every later phase | Discovered in Phase 0 deliberately; fall back to reduced resolution/rate or headless |
 | Spatial estimation error exceeds magnet alignment tolerance | Medium — measured in Phase 5 | Depth: ~1 cm median. RGB-only: ~1–4 cm to 4 m, ~11 cm beyond. Close objects (< ~0.5–1 m) get *no* position (clipped blob), so the last metre must use the world model's stored position; closed-loop visual align stays a TODO |
-| Open-loop `ALIGN` unreliable in sim physics | Medium | Keep standoff generous; confirm attach via `MagnetState` rather than assuming success |
+| Open-loop `ALIGN` unreliable in sim physics | Medium — still open, Phase 10 | Keep standoff generous; confirm attach via `MagnetState` rather than assuming success |
 | Colour-blob detection is brittle on real cameras (lighting) | Low in sim, **high on hardware** | Accepted MVP tradeoff behind the `Detector` interface; `YoloDetector` is the hardware answer |
-| `detachable-joint` re-attach semantics differ from expectation | Low | `attach_topic` support confirmed present in 8.15.0; Phase 9 tests it standalone before integration |
+| `detachable-joint` re-attach semantics differ from expectation | ~~Low~~ **RESOLVED (Phase 9, measured)** | Confirmed working, but with three real quirks: NO distance/contact check of its own (a bridge node must gate attach by geometry); every instance starts ATTACHED (must be detached at startup); `parent_link` must be `base_link`, not `magnet_link` (URDF fixed-joint lumping) - all three handled in `sim_magnet_bridge.py`, all three regression-tested |
 | RGB/depth content lag (~40 ms) corrupts fused positions from a moving camera | Medium — found in Phase 3 | Perception processes while stationary/slow or compensates; robust depth over the blob mask; on hardware prefer aligned depth. Tests use step-and-look |
 | **The Phase 4 detour-goal flake** | ~~Medium~~ **RESOLVED (plan Phase 7)** | Root cause: RPP's `stateful` latch froze the robot in rotate-only mode outside the goal checker's tolerance. Fix `FollowPath.stateful: false`; 60 of 60 goals after, 12–44 % failing before; regression tests added (see Phase 7) |
 | **`test_occupied_cells_lie_on_real_surfaces` (map precision)** | ~~Medium~~ **RESOLVED (plan Phase 7, maintainer-approved)** | The 5 cm criterion mostly measured a ~4 cm rigid map offset from Gazebo's frame (raw 68–93 %, aligned 87–98.5 %, 11 maps), not map shape. Fixed by scoring the best-fit-aligned distances against the SAME 70 %/95 % thresholds, plus a new ≤ 10 cm bound on the offset itself so a genuinely mis-registered map still fails. Cause of the offset still not isolated (harmless: AMCL localises against the same map) |

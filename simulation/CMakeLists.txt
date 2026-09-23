@@ -8,6 +8,7 @@ find_package(ament_cmake_python REQUIRED)
 ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS scripts/generate_world.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/sim_magnet_bridge.py DESTINATION lib/${PROJECT_NAME})
 
 install(
   DIRECTORY urdf worlds models config launch

@@ -80,6 +80,20 @@ def arena():
     _teardown(env)
 
 
+@pytest.fixture(scope='module')
+def magnetsim():
+    """The arena with the Phase 9 electromagnet wired: sim_magnet_bridge + magnet_node."""
+    env = _bring_up(['magnet:=true'], depth=False)
+    from fire_resq_interfaces.srv import SetMagnet
+    client = env.bot.create_client(SetMagnet, '/fire_resq/set_magnet')
+    if not client.wait_for_service(timeout_sec=30):
+        _teardown(env)
+        pytest.fail('/fire_resq/set_magnet did not become available')
+    env.set_magnet = client
+    yield env
+    _teardown(env)
+
+
 @pytest.fixture(scope='session')
 def truth(scenario):
     t = {'fire': scenario.world_to_odom(scenario.fire.x, scenario.fire.y)}

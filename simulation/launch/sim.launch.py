@@ -43,6 +43,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'camera_hfov', default_value='1.047',
             description='Camera horizontal FOV in radians (1.047 = 60 deg, 1.518 = 87 deg RealSense-like).'),
+        DeclareLaunchArgument(
+            'victim_names', default_value='',
+            description='Space-separated scenario victim model names. Empty (default) = no electromagnet '
+                        'wiring, robot xacro unchanged. Set by arena.launch.py only when magnet:=true.'),
         DeclareLaunchArgument('x', default_value='0.0', description='Spawn x (m).'),
         DeclareLaunchArgument('y', default_value='0.0', description='Spawn y (m).'),
         DeclareLaunchArgument('yaw', default_value='0.0', description='Spawn yaw (rad).'),
@@ -55,6 +59,9 @@ def generate_launch_description():
             PathJoinSubstitution([pkg_sim, 'urdf', 'fire_resq_gazebo.urdf.xacro']),
             ' use_depth:=', LaunchConfiguration('use_depth'),
             ' camera_hfov:=', LaunchConfiguration('camera_hfov'),
+            # Quoted: victim_names is space-separated, and Command resolves via shlex.split -
+            # an unquoted value would be split into several bogus xacro arguments.
+            ' victim_names:="', LaunchConfiguration('victim_names'), '"',
         ]),
         value_type=str,
     )

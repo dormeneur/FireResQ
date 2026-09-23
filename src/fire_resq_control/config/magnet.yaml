@@ -1,0 +1,13 @@
+# FireResQ magnet_node parameters. Identical on simulation and hardware - what changes is which
+# driver is listening on energize_topic/state_topic (see magnet_backend.py).
+magnet_node:
+  ros__parameters:
+    # ---- interface -------------------------------------------------------------------------
+    set_magnet_service: /fire_resq/set_magnet
+    energize_topic: /fire_resq/magnet/energize     # low-level command: coil on/off. Not for cognition.
+    state_topic: /fire_resq/magnet/state           # the public interface (Implementation_Plan.md section 6)
+
+    # How long a SetMagnet call waits for the driver to confirm before reporting failure. The sim
+    # driver answers within one control cycle; this is generous headroom, not a measured bound.
+    attach_timeout_s: 3.0
+    detach_timeout_s: 3.0

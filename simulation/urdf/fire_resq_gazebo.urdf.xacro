@@ -15,6 +15,10 @@
        first declaration of an xacro arg wins. See wheels.xacro. -->
   <xacro:arg name="wheel_collision" default="sphere"/>
 
+  <!-- Space-separated scenario victim names (empty = no electromagnet wiring, robot unchanged).
+       Set by arena.launch.py only when magnet:=true. See gz_magnet.xacro. -->
+  <xacro:arg name="victim_names" default=""/>
+
   <!-- The reusable robot, imported as-is. -->
   <xacro:include filename="$(find fire_resq_description)/urdf/fire_resq.urdf.xacro"/>
 
@@ -58,11 +62,7 @@
   <!-- ================= Gazebo systems ================= -->
   <xacro:include filename="$(find fire_resq_simulation)/urdf/gz_drive.xacro"/>
   <xacro:include filename="$(find fire_resq_simulation)/urdf/gz_sensors.xacro"/>
-
-  <!--
-    TODO(phase-9): detachable-joint wiring for the electromagnet on magnet_link.
-                   Deliberately absent: electromagnet behaviour belongs to the rescue
-                   mechanism phase and the magnet abstraction in fire_resq_control.
-  -->
+  <xacro:include filename="$(find fire_resq_simulation)/urdf/gz_magnet.xacro"/>
+  <xacro:victim_magnet_plugins names="$(arg victim_names)"/>
 
 </robot>

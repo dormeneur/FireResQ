@@ -43,6 +43,16 @@ def test_cognition_and_planning_do_not_import_hardware_or_gazebo():
             assert not re.search(r'^\s*(import|from)\s+(gz|ignition|ros_gz|RPi|serial)', text, re.M), p
 
 
+def test_control_stays_hardware_and_simulator_agnostic():
+    """The Phase 9 magnet abstraction (magnet_backend.py, magnet_node.py) talks only to two
+    standard ROS topics; the Gazebo-specific driver on the other end lives in fire_resq_simulation
+    (outside src/, so it can legitimately read ground truth), never here."""
+    for p in (SRC / 'fire_resq_control').rglob('*.py'):
+        text = _code(p)
+        assert 'fire_resq_hardware' not in text and 'fire_resq_simulation' not in text, p
+        assert not re.search(r'^\s*(import|from)\s+(gz|ignition|ros_gz|RPi|serial)', text, re.M), p
+
+
 def test_perception_stays_camera_and_simulator_agnostic():
     """Perception runs unchanged on the simulated and the real robot: stable ROS topics and TF only."""
     for p in (SRC / 'fire_resq_perception').rglob('*.py'):
