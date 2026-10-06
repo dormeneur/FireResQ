@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'fire_resq_planning'
@@ -9,17 +11,19 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Aditya Bharti',
     maintainer_email='adityabharti1214@gmail.com',
-    description='Rescue task sequencing and Nav2 goal management.',
+    description='The rescue mission: an explicit FSM from perception to release, with Nav2 goals and the last-metre ALIGN.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            # Nodes are registered here as each phase implements them.
+            'rescue_node = fire_resq_planning.rescue_node:main',
         ],
     },
 )

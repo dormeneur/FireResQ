@@ -5,6 +5,8 @@
 arena.launch.py (unchanged) provides the world, the robot and the ROS bridge; nav_stack.launch.py
 (shared with hardware) provides depth -> /scan and, as they are added, SLAM / localization / Nav2.
 
+Opt-ins (all off by default): perception, world_model, cognition, magnet, rescue (the whole mission).
+
 The camera defaults to 87 deg here, not the 60 deg placeholder of the plain arena launch. Phase 4
 Step 0 measured that scan-matching SLAM is only good on the wider, RealSense-like wedge
 (docs/Implementation_Plan.md, Phase 4). The Phase 2-3 launches keep 60 deg so their behaviour and
@@ -26,6 +28,7 @@ def generate_launch_description():
     perc = Path(get_package_share_directory('fire_resq_perception')) / 'launch'
     wm = Path(get_package_share_directory('fire_resq_world_model')) / 'launch'
     cog = Path(get_package_share_directory('fire_resq_cognition')) / 'launch'
+    plan = Path(get_package_share_directory('fire_resq_planning')) / 'launch'
     return LaunchDescription([
         DeclareLaunchArgument('scenario', default_value='default'),
         DeclareLaunchArgument('gui', default_value='true'),
@@ -47,6 +50,14 @@ def generate_launch_description():
                               description='Also run the world model (needs perception:=true and a `map` frame).'),
         DeclareLaunchArgument('camera_hfov', default_value='1.518',
                               description='Depth/RGB horizontal FOV, radians (1.518 = 87 deg).'),
+        DeclareLaunchArgument('rescue', default_value='false',
+                              description='Also run the rescue mission (needs localization:=amcl on a saved map, perception, world_model, '
+                                          'cognition, magnet and Nav2: the whole stack).'),
+        DeclareLaunchArgument('rescue_autostart', default_value='true', description='Start the mission at launch.'),
+        DeclareLaunchArgument('magnet', default_value='false',
+                              description='Also wire the electromagnet (see arena.launch.py): sim_magnet_bridge + magnet_node.'),
+        DeclareLaunchArgument('magnet_contact_tolerance_m', default_value='',
+                              description='Simulation fault injection: override the sim magnet\'s contact tolerance (empty = default).'),
         # SCOPED, because launch arguments are GLOBAL across included launch files: the values set for
         # the arena include would otherwise overwrite this file's own arguments for everything that
         # comes after it (measured: `use_rviz:=false` for the arena silently disabled the
@@ -62,6 +73,8 @@ def generate_launch_description():
                     'use_rviz': 'false',                   # RViz comes from the navigation stack
                     'perception': 'false',                 # ...and so does perception (in `map`); else it would start twice
                     'camera_hfov': LaunchConfiguration('camera_hfov'),
+                    'magnet': LaunchConfiguration('magnet'),
+                    'magnet_contact_tolerance_m': LaunchConfiguration('magnet_contact_tolerance_m'),
                 }.items()),
         ]),
         IncludeLaunchDescription(
@@ -89,5 +102,10 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(str(cog / 'prioritizer.launch.py')),
                 launch_arguments={'use_sim_time': 'true',
                                   'decision_model': LaunchConfiguration('decision_model')}.items()),
+        ]),
+        GroupAction(scoped=True, condition=IfCondition(LaunchConfiguration('rescue')), actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(str(plan / 'rescue.launch.py')),
+                launch_arguments={'use_sim_time': 'true', 'autostart': LaunchConfiguration('rescue_autostart')}.items()),
         ]),
     ])

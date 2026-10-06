@@ -59,12 +59,13 @@ def _setup(context, *args, **kwargs):
         # The Phase 9 electromagnet: magnet_node (hardware-neutral, fire_resq_control) talks only
         # to the two standard topics sim_magnet_bridge.py (Gazebo-specific, fire_resq_simulation)
         # implements on the other end - see fire_resq_control/magnet_backend.py.
+        bridge_params = {'use_sim_time': True, 'victim_names': ' '.join(v.id for v in scenario.victims)}
+        tol = LaunchConfiguration('magnet_contact_tolerance_m').perform(context)
+        if tol:                                       # simulation fault injection (a refusing magnet); empty = the default
+            bridge_params['contact_tolerance_m'] = float(tol)
         actions.append(Node(
             package='fire_resq_simulation', executable='sim_magnet_bridge.py', name='sim_magnet_bridge',
-            output='screen', parameters=[{
-                'use_sim_time': True,
-                'victim_names': ' '.join(v.id for v in scenario.victims),
-            }]))
+            output='screen', parameters=[bridge_params]))
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(Path(get_package_share_directory('fire_resq_control'))
                                              / 'launch' / 'magnet.launch.py')),
@@ -108,5 +109,8 @@ def generate_launch_description():
         DeclareLaunchArgument('magnet', default_value='false',
                               description='Also wire the electromagnet: sim_magnet_bridge + magnet_node '
                                           '(/fire_resq/set_magnet, /fire_resq/magnet/state).'),
+        DeclareLaunchArgument('magnet_contact_tolerance_m', default_value='',
+                              description='Simulation fault injection: override the sim magnet\'s contact tolerance in metres '
+                                          '(empty = the default 2 cm). A tiny value makes every attach refuse.'),
         OpaqueFunction(function=_setup),
     ])

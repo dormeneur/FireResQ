@@ -16,6 +16,7 @@ import rclpy  # noqa: E402
 from fire_resq_simulation import load_scenario, resolve_scenario  # noqa: E402
 from geometry_msgs.msg import PoseWithCovarianceStamped  # noqa: E402
 from routes import LAP_WORLD  # noqa: E402
+from missionlib import MissionTap, TruthLog  # noqa: E402
 from simlib import Bot, GroundTruth, lifecycle_state, run_sim, start_group, stop_group  # noqa: E402
 
 
@@ -222,6 +223,24 @@ def _amcl_bring_up(map_yaml, navigation, extra=(), **flags):
     except BaseException:
         _teardown(env)
         raise
+
+
+def mission_bring_up(map_yaml, extra=()):
+    """The WHOLE mission stack from a cold start: arena_nav + AMCL on the saved map + Nav2 + perception (depth) + world model +
+    cognition + the magnet + the rescue node, autostarted. Unlike _amcl_bring_up this does NOT publish the start pose: the
+    rescue node does (a cold start must not need a test to hold its hand), and the mission begins as soon as it is ready."""
+    env = _bring_up(['localization:=amcl', f'map:={map_yaml}', 'perception:=true', 'spatial_backend:=depth', 'world_model:=true',
+                     'cognition:=true', 'magnet:=true', 'rescue:=true', *extra],
+                    depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True, wait_map=False, wait_downstream=False,
+                    perception=True, world=True, cognition=True)
+    env.tap = MissionTap(env.bot)
+    env.truth = TruthLog(['fire_resq', 'victim_1', 'victim_2', 'victim_3'])
+    return env
+
+
+def mission_teardown(env):
+    env.truth.stop()
+    _teardown(env)
 
 
 @pytest.fixture(scope='module')

@@ -67,3 +67,19 @@ def test_cognition_and_planning_cannot_branch_on_which_camera_backend_produced_a
     for pkg in ('fire_resq_cognition', 'fire_resq_planning', 'fire_resq_world_model'):
         for p in (SRC / pkg).rglob('*.py'):
             assert 'source_backend' not in _code(p), p
+
+
+def test_planning_talks_to_the_other_layers_only_through_ros_interfaces():
+    """The rescue FSM consumes messages and services - never another layer's implementation (Architecture.md: layers are
+    replaceable). It must not import perception, cognition or world-model code, nor navigation internals, nor simulation code."""
+    for p in (SRC / 'fire_resq_planning').rglob('*.py'):
+        text = _code(p)
+        assert not re.search(r'^\s*(import|from)\s+(fire_resq_perception|fire_resq_cognition|fire_resq_world_model|fire_resq_navigation'
+                             r'|fire_resq_simulation|fire_resq_hardware)', text, re.M), p
+
+
+def test_the_rescue_fsm_never_calls_the_wall_clock_or_the_simulator_directly():
+    """fsm.py is a pure function of its Observations: the same inputs give the same mission (unit-tested), which needs it to read
+    no clock and to move nothing itself."""
+    text = _code(SRC / 'fire_resq_planning' / 'fire_resq_planning' / 'fsm.py')
+    assert not re.search(r'\b(time\.time|time\.monotonic|datetime|random\.|os\.environ|subprocess|rclpy)\b', text)

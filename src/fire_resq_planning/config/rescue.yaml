@@ -1,0 +1,26 @@
+# FireResQ rescue mission (rescue_node). The FSM's engineering constants. Nothing here is a coordinate, a victim id or an
+# order: which victim is rescued next is cognition's decision, made from the world model at every SELECT_TARGET.
+# Values written as floats on purpose (a double parameter refuses an integer). Defaults live in config.py, with their reasons.
+rescue_node:
+  ros__parameters:
+    # ---- interface ------------------------------------------------------------------------------------------
+    world_state_topic: /fire_resq/world_state
+    detections_topic: /fire_resq/detections
+    magnet_state_topic: /fire_resq/magnet/state
+    mission_state_topic: /fire_resq/mission_state      # latched JSON: state, target, counts, the whole transition history
+    select_target_service: /fire_resq/select_target
+    update_status_service: /fire_resq/update_victim_status
+    set_magnet_service: /fire_resq/set_magnet
+    navigate_action: navigate_to_pose
+    map_frame: map
+    base_frame: base_link
+    tick_hz: 20.0
+    autostart: true                     # false = idle until an ExecuteRescue goal (victim_id "" - cognition chooses) starts the mission
+    publish_initial_pose: true          # until AMCL has localised, publish the mission start pose (the map origin) on /initialpose
+    use_robot_limits: true              # magnet reach and velocity limits come from the description, not from this file
+
+    # ---- the world's configuration the FSM cannot read from anywhere else (unit tests compare each with its source) ------
+    victim_ring_radius_m: 0.056         # models/victim/model.sdf
+    safe_zone_size_x: 1.0               # fire_resq_world_model/config/world_model.yaml
+    safe_zone_size_y: 1.0
+    approach_standoff_m: 0.4            # fire_resq_cognition/config/prioritizer.yaml (the approach-pose contract)

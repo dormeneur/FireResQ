@@ -173,3 +173,31 @@ def test_release_drops_the_victim_in_place_and_the_robot_can_still_drive(magnets
     still = entity_poses([v.id])[v.id]
     assert math.hypot(still[0] - just_released[0], still[1] - just_released[1]) < 0.01, \
         'the released victim moved on its own while the robot drove away'
+
+
+def test_a_carried_victim_is_held_off_the_floor_and_never_pins_the_robot(magnetsim, scenario):
+    """Phase 10 regression. A weld made while the victim rests on the floor freezes it a fraction of a millimetre INTO the
+    floor's soft contact; the solver's push-out, passed to the robot through the weld, pinned robot and victim together
+    (measured: 13 of 29 attach-then-turn trials, every victim, the robot could not turn - while its odometry still said it
+    did). sim_magnet_bridge.py now lifts the victim and only counts a weld made clear of the floor (0 of 30 after)."""
+    target = scenario.victims[1]
+    turned = []
+    for i in range(6):
+        for v in scenario.victims:                       # earlier tests leave victims wherever they released them
+            teleport(v.id, v.x, v.y, v.yaw, z=0.0)
+        magnetsim.bot.stop(0.5)
+        place_at(magnetsim, target.id, gap_m=0.005, bearing=0.6 + 0.05 * i)
+        magnetsim.bot.stop(1.0)
+        assert call_set_magnet(magnetsim, True).state.attached
+        magnetsim.bot.stop(0.5)
+        p1 = entity_poses(['fire_resq', target.id])
+        magnetsim.bot.spin_sim(1.5, wz=0.5)
+        magnetsim.bot.stop(0.5)
+        p2 = entity_poses(['fire_resq'])
+        dyaw = abs(math.atan2(math.sin(p2['fire_resq'][5] - p1['fire_resq'][5]), math.cos(p2['fire_resq'][5] - p1['fire_resq'][5])))
+        turned.append((round(p1[target.id][2] * 1000, 1), round(dyaw, 2)))
+        assert call_set_magnet(magnetsim, False).success
+        magnetsim.bot.stop(0.5)
+    print(f'MEASURED (victim height mm while held, robot turn rad) per trial: {turned}')
+    assert all(z >= 1.0 for z, _ in turned), f'a victim was welded resting on the floor: {turned}'
+    assert all(dyaw > 0.5 for _, dyaw in turned), f'the robot could not turn while carrying (commanded 0.75 rad): {turned}'
