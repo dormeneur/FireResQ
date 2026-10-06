@@ -16,6 +16,10 @@ Perception
 → Reassessment
 ```
 
+## Start here
+- [HOW_TO_RUN_THE_COMPLETE_SIMULATION.md](HOW_TO_RUN_THE_COMPLETE_SIMULATION.md): install, build and run the full rescue mission in simulation.
+- [HOW_TO_MAKE_THE_COMPLETE_ROBOT.md](HOW_TO_MAKE_THE_COMPLETE_ROBOT.md): wire the real robot, run the bench test and the camera demo, and the road to full autonomy.
+
 ## Documents
 - `PRD.md` — complete scope and requirements.
 - `Architecture.md` — software architecture and ROS 2 boundaries.
