@@ -40,7 +40,7 @@ cd ~/rescue
 python3 -u rescue_bot.py --selftest      # maths only
 python3 -u rescue_bot.py --view          # camera + detection, motors untouched -> http://pi.local:8090
 python3 -u rescue_bot.py --sonar-cal     # book 30 cm straight ahead; servo only, no motor power needed
-python3 -u rescue_bot.py --survey        # pivots through 5 views and prints the map + rescue order, no driving
+python3 -u rescue_bot.py --survey        # pivots right through 4 views and prints the map + rescue order, no driving
 python3 -u rescue_bot.py                 # the mission, started facing the arena
 ```
 
@@ -61,7 +61,7 @@ The map is built from the camera survey and corrected against the fire; it is no
 
 ## How the mission decides and moves
 
-1. **Survey** from the start: pivots to 0°, +35°, +70°, −35°, −70°, measuring each turn with the camera, and places
+1. **Survey** from the start: turns right to 0°, −35°, −70°, −105°, measuring each turn with the camera, and places
    every red/yellow blob on the floor (bearing from the pixel column, range from where it meets the floor). Sightings
    within 0.3 m merge. This is the map; the start pose is its origin.
 2. **Order:** victims sorted by distance to the fire, closest first.

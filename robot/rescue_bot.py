@@ -14,8 +14,8 @@ on routes that keep clear of the fire, coming back to the start after each one, 
 DASHBOARD: http://pi.local:8090 - live camera, the map, what the robot is doing, and why.
 
 How it moves (measured on this robot, 2026-10-20): a skid spin (one side forward, the other backward) does NOT turn it;
-a PIVOT (one side driving, the other stopped) does, ~12 deg per 0.6 s pulse, fading after 2-3 pulses as the AA pack
-sags and coming back after a rest. So turns are CLOSED-LOOP on the camera: pulse, stop, measure how far the picture
+pivots were unreliable. So turns are ARCS (drive forward while curving, then backward while curving), CLOSED-LOOP on the
+camera: pulse, stop, measure how far the picture
 slid sideways (phase correlation), repeat until the angle is reached. Straight legs are timed (CRUISE_MPS), and the
 position is re-measured against the fire after every trip, so the timing error does not pile up.
 Map frame = the start pose: x forward, y left, angles CCW (+ = left).
@@ -66,20 +66,30 @@ BOX_COLOUR = {'fire': (0, 0, 255), 'victim': (0, 255, 255)}
 MOTOR_SUPPLY_V = 6.0                     # the pack on the shield's EXT_PWR: 4xAA or 8xAA in PARALLEL = 6.0, 8xAA in series = 12.0
 POWER_SCALE = min(1.0, 7.5 / (MOTOR_SUPPLY_V - 2.0))
 wb.MAX_POWER = round(255 * POWER_SCALE)  # nothing is ever commanded above this
-PIVOT_POWER = 190                        # a fresh pack at 255 spun the robot ~60+ deg per pulse: too far to measure
+# One motor turns slower than the other three. At top power it cannot keep up, so the robot would pull toward its side.
+# The weak motor gets the full command; the other three are scaled to WEAK_RATIO of it, so all four match at the top.
+WEAK_MOTOR = 3                           # TODO(calibrate): shield terminal M1..M4 of the slow motor (robot.yaml: M3 is weak)
+WEAK_RATIO = 0.85                        # TODO(calibrate): its top speed / the others'. Drive 1 m straight: veers to the
+#                                          weak side -> lower this; veers away from it -> raise it
+wb.TRIM = tuple(1.0 if m + 1 == WEAK_MOTOR else WEAK_RATIO for m in range(4))
 MIN_CONF = 0.12                          # rotation() confidence below this = the pictures did not overlap
-# Each turn direction has two pivots, alternated: one side forward, or the OTHER side backward. Alternating shares
-# the load between the motors, and the forward/backward creep of the two cancels out.
-PIVOTS = {True: (wb.drive_powers(0, PIVOT_POWER), wb.drive_powers(-PIVOT_POWER, 0)),      # turn LEFT
-          False: (wb.drive_powers(PIVOT_POWER, 0), wb.drive_powers(0, -PIVOT_POWER))}     # turn RIGHT
+# ARC turns, no skid: every wheel always rolls the way the robot is heading, one side just slower, so nothing is dragged
+# sideways (a skid or pivot turn on rubber tyres on tile would not budge the robot reliably). To turn the heading right
+# the left side runs faster than the right, forwards or backwards; the robot alternates a forward arc and a backward
+# arc, so it zig-zags on the spot like a three-point turn. The slow side stays above the motors' stall power (~110).
+ARC_OUTER = 235
+ARC_INNER = 135                          # x WEAK_RATIO = 115 on the trimmed motors: still above stall
+ARCS = {True: (wb.drive_powers(ARC_INNER, ARC_OUTER), wb.drive_powers(-ARC_OUTER, -ARC_INNER)),    # turn LEFT: fwd, back
+        False: (wb.drive_powers(ARC_OUTER, ARC_INNER), wb.drive_powers(-ARC_INNER, -ARC_OUTER))}   # turn RIGHT: fwd, back
+ARC_MPS = 0.25 * (ARC_OUTER + ARC_INNER) / 2 / 210       # how fast an arc advances the robot (CRUISE_MPS scaled by power)
 PULSE_S = (0.08, 0.8)                    # (min, max) pivot pulse
-FIRST_PULSE_S = 0.12                     # the first pulse of a turn is short whatever the pack: the rate is unknown
+FIRST_PULSE_S = 0.6                      # starting pulse: measured 2026-10-20, a fresh pack needs ~0.6-0.8 s to break away (~15-20 deg)
 STEP_DEG = 12                            # aim for at most this per pulse: the camera must still overlap to measure it
-START_RATE_DPS = 60.0                    # first guess at the pivot rate; learned while turning
+START_RATE_DPS = 25.0                    # first guess at the pivot rate; learned while turning
 TURN_TOL_DEG = 4
 STALL_DEG = 1.0                          # a pulse that turned less than this stalled (battery sagging)
-STALL_REST_S = 4.0                       # rest after a stall: the pack recovers in a few seconds
-MAX_STALLS = 5
+STALL_REST_S = 1.0                       # rest after a pulse that did not move it (the pulse gets longer, see Nav.turn)
+MAX_STALLS = 8
 CRUISE = round(210 * POWER_SCALE)        # forward power for legs and homing
 CRUISE_MPS = 0.25                        # TODO(calibrate): forward speed at CRUISE. Re-localising hides most error
 SETTLE_S = 0.35                          # stop this long before trusting a frame
@@ -89,7 +99,7 @@ SONAR_CENTER_DEG = 128                   # servo angle that points STRAIGHT AHEA
 OBSTACLE_CM = 22                         # something this close ahead (and closer than the target) = stop
 
 # ---- mission ----------------------------------------------------------------------------------------------------
-SURVEY_VIEWS_DEG = (0, 35, 70, -35, -70)  # headings to look from at the start (FOV 41: neighbours overlap)
+SURVEY_VIEWS_DEG = (0, -35, -70, -105)    # scan by turning RIGHT (the reliable pivot); FOV 41 so neighbours overlap
 MERGE_M = 0.30                           # sightings of one kind closer than this are the same object
 FIRE_CLEAR_M = 0.40                      # routes keep this far from the fire...
 OBSTACLE_CLEAR_M = 0.25                  # ...from an obstacle the sonar found...
@@ -390,6 +400,7 @@ class Nav:
         self.robot, self.cam, self.status = robot, cam, Status()
         self.x = self.y = self.th = 0.0
         self.rate = START_RATE_DPS
+        self.max_t = FIRST_PULSE_S                                  # longest pulse allowed: learned across turns
         self.obstacle = None
         self.dead = False                                           # the motors gave up: the mission must stop
 
@@ -407,12 +418,13 @@ class Nav:
         """Turn by `ang` rad (+ = left), measured by the camera. False if the motors stalled for good."""
         if abs(ang) > math.radians(TURN_TOL_DEG):
             DASH.say(f'Turning {abs(math.degrees(ang)):.0f} deg {"left" if ang > 0 else "right"}')
-        done, stalls, k, max_t = 0.0, 0, 0, FIRST_PULSE_S
+        done, stalls, k, max_t = 0.0, 0, 0, self.max_t
         prev = self.look()[1]
         while abs(ang - done) > math.radians(TURN_TOL_DEG) and not STOP_EVENT.is_set():
             rem = math.degrees(ang - done)
             t = max(PULSE_S[0], min(max_t, PULSE_S[1], min(abs(rem), STEP_DEG) / self.rate))
-            hold(self.robot, self.status, PIVOTS[rem > 0][k % 2], t, f'{state} ({rem:+.0f} deg to go)')
+            fwd = k % 2 == 0                                        # forward arc, then backward arc, ...
+            hold(self.robot, self.status, ARCS[rem > 0][k % 2], t, f'{state} ({rem:+.0f} deg to go)')
             k += 1
             cur = self.look()[1]
             if prev is None or cur is None:
@@ -428,6 +440,9 @@ class Nav:
             else:
                 max_t = min(PULSE_S[1], max_t * 1.25) if abs(math.degrees(d)) < STEP_DEG * 1.3 else max_t
             done += d
+            adv = ARC_MPS * t * (1 if fwd else -1)                  # the arc also carries the robot a few cm
+            self.x += adv * math.cos(self.th + d / 2)
+            self.y += adv * math.sin(self.th + d / 2)
             self.th = wrap(self.th + d)
             self.moved()
             if conf >= MIN_CONF and abs(math.degrees(d)) < STALL_DEG:
@@ -437,11 +452,12 @@ class Nav:
                     self.dead = True
                     break
                 max_t = min(PULSE_S[1], max(t, max_t) * 1.6)        # too short to break the wheels loose: push longer
-                DASH.say(f'Pivot did not move the robot - trying a longer pulse ({max_t:.2f} s)')
+                DASH.say(f'Arc did not turn the robot - trying a longer pulse ({max_t:.2f} s)')
                 self.pause(STALL_REST_S, f'{state}: no movement, trying a longer pulse')
             elif conf >= MIN_CONF:
                 stalls = 0
                 self.rate = 0.5 * self.rate + 0.5 * abs(math.degrees(d)) / t
+        self.max_t = max_t                                          # the next turn starts with what worked
         return abs(ang - done) <= math.radians(TURN_TOL_DEG)
 
     def face(self, p, state='turning'):
