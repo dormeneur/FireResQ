@@ -71,15 +71,18 @@ biggest depth error, into `calibration.json` (kept out of git: it belongs to one
 
 ## Moving without encoders
 
-Skid and pivot turns don't reliably turn this robot on tile (all four motors are fine in the air), so:
+Measured on the tile floor, 1 s each (2026-10-21): a skid spin and an arc (one side full, the other half) barely turn
+the robot (an arc: 1.7°); a **pivot**, where one side drives and the other stops, turns it 13–19°. So:
 
-- **Turns are arcs.** All wheels roll, one side slower; a forward arc then a backward arc turns it roughly on the
-  spot.
-- **Heading comes from the camera.** The camera thread adds up the image shift between consecutive frames.
+- **Turns are pivots.** A forward pivot then a backward pivot of the other side: both rotate the same way and
+  their creep cancels, so the robot turns roughly on the spot.
+- **Heading comes from the camera.** It adds up the image shift between consecutive frames; measured, it tracks
+  the pivots while they happen.
 - **Straight legs hold that heading.** This also cancels the slow motor's pull. If the log keeps printing
   `steering bias`, tune `WEAK_MOTOR` / `WEAK_RATIO`.
-- **Reaching a victim.** The robot homes in on it with the camera until it is right in front (~22 cm), then creeps
-  `TOUCH_CREEP_M` (17 cm) blind to touch it.
+- **Homing is stop-and-go.** Look at a still picture, turn to face the victim if needed, drive a hop of at most
+  20 cm, repeat. In this light a moving camera blurs the thin yellow rim away. When the victim is right in front
+  (~22 cm), the robot creeps `TOUCH_CREEP_M` (17 cm) blind to touch it.
 - **The way home is driven in reverse along the same route,** so a wrong `CRUISE_MPS` cancels out. Then the fire,
   seen from the start, re-anchors position and heading.
 - **Safety stops.** Forward legs stop for a sonar obstacle (it goes on the map and the route is re-planned) or for

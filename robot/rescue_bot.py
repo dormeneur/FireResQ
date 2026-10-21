@@ -33,8 +33,8 @@ the pixel column. "Closest to the fire" is the victim's distance to the box's BA
 the box is ~40 cm wide, so a wheel by its corner is close to the fire even if far from its centre), measured inside
 each photo (the robot's own errors cancel) and taken as the median over several photos.
 
-MOVING (no encoders; skid and pivot turns do not turn this robot on tile): turns are ARCS (all wheels roll, one side
-slower; forward then backward arcs), heading comes from the camera (image shift between consecutive frames), straight
+MOVING (no encoders): turns are PIVOTS (one side drives, the other stops - measured: arcs and skid spins do
+not turn this robot on tile; forward then backward pivots), heading comes from the camera (image shift between consecutive frames), straight
 legs hold that heading and are timed, the way home is driven IN REVERSE along the same route, and the fire, seen from
 the start, re-anchors position and heading. Map frame = the start pose: x forward, y left, angles CCW (+ = left).
 """
@@ -78,8 +78,11 @@ except (OSError, ValueError, KeyError):
 FLOOR_V = 100                            # the floor is bright (V 160-180); anything darker is an object on it
 DARK_V = 50                              # a black tyre (V 10-30)
 RIM_HSV = ((18, 35, 95), (38, 255, 255))  # the pale-yellow rim of a flat wheel: H 25-33, S 43-130, V 120-155
-TAN_HSV = ((8, 100, 35), (24, 255, 120))  # the cardboard box: H 14-22, S 123-200, V 52-69
+TAN_HSV = ((15, 100, 35), (26, 255, 130))  # the cardboard box: H 19-21 (S 104-200, V 46-69); an orange cushion
+#                                           (H 11-12) must stay out
 FIRE_MIN_AREA = 1500                     # px: the box is big; a tan speck is not the fire
+FIRE_MIN_WIDTH_M = 0.20                  # ...and its base is ~40 cm wide in real life
+MAX_RANGE_M = 4.0                        # ignore anything further away than this
 WHEEL_WIDTH_M = (0.03, 0.12)             # a blob must be this wide in real life to be a wheel
 BOX_COLOUR = {'fire': (0, 0, 255), 'victim': (0, 255, 255)}
 
@@ -94,21 +97,22 @@ wb.MAX_POWER = round(255 * POWER_SCALE)  # nothing is ever commanded above this
 WEAK_MOTOR = 3                           # TODO(calibrate): shield terminal M1..M4 of the slow motor
 WEAK_RATIO = 0.85                        # TODO(calibrate): see the 'steering bias' line each straight leg prints
 wb.TRIM = tuple(1.0 if m + 1 == WEAK_MOTOR else WEAK_RATIO for m in range(4))
-# ARC turns: every wheel rolls the way the robot faces, one side slower - nothing is dragged sideways. To turn right
-# the left side runs faster than the right, forwards or backwards. The slow side stays above stall (~110 after trim).
-ARC_OUTER = 235
-ARC_INNER = 135
-ARCS = {True: (wb.drive_powers(ARC_INNER, ARC_OUTER), wb.drive_powers(-ARC_OUTER, -ARC_INNER)),    # LEFT: fwd, back
-        False: (wb.drive_powers(ARC_OUTER, ARC_INNER), wb.drive_powers(-ARC_INNER, -ARC_OUTER))}   # RIGHT: fwd, back
-ARC_MAX_S = 1.0                          # longest single arc before switching direction (keeps the robot in place)
+# PIVOT turns: one side drives (forward or backward), the other side STOPS. Measured on the tile floor, 2026-10-21,
+# 1 s each: an arc (one side full, the other half) turned the robot 1.7 deg - it just rolls almost straight; a pivot
+# turned it 13-19 deg. Each turn alternates a forward pivot and a backward pivot of the OTHER side: both rotate the
+# same way, and their forward/backward creep cancels, so the robot turns about on the spot.
+PIVOT_POWER = 255
+PIVOTS = {True: (wb.drive_powers(0, PIVOT_POWER), wb.drive_powers(-PIVOT_POWER, 0)),      # LEFT: right fwd, left back
+          False: (wb.drive_powers(PIVOT_POWER, 0), wb.drive_powers(0, -PIVOT_POWER))}     # RIGHT: left fwd, right back
+PIVOT_MAX_S = 1.0                        # longest single pivot before switching to the other one
 TURN_TOL_DEG = 3.0
 TURN_LEAD_DEG = 4.0                      # stop an arc this early: the camera reports ~1 frame late and the robot coasts
 STALL_DEG = 1.0                          # an arc that turned less than this did not move the robot
 MAX_STALLS = 6
-MAX_ARCS = 24                            # give up a turn after this many arcs (it is oscillating or stuck)
+MAX_PIVOTS = 24                          # give up a turn after this many pivots (it is oscillating or stuck)
 CRUISE = round(210 * POWER_SCALE)        # forward power for legs and homing
 CRUISE_MPS = 0.25                        # TODO(calibrate): forward speed at CRUISE. Reverse return cancels its error
-ARC_MPS = CRUISE_MPS * (ARC_OUTER + ARC_INNER) / 2 / 210   # how fast an arc carries the robot along
+PIVOT_MPS = CRUISE_MPS * PIVOT_POWER / 2 / 210            # how fast a pivot carries the robot's centre along
 K_HEAD = 160                             # steering power per radian of heading error on straight legs
 SETTLE_S = 0.35                          # stop this long before trusting a frame
 CYCLE_S = 0.06                           # control loop period (the Uno's watchdog is 400 ms)
@@ -127,10 +131,11 @@ VICTIM_CLEAR_M = 0.18                    # ...and from the victims that are not 
 OBSTACLE_CLEAR_M = 0.25                  # ...and from an obstacle the sonar found
 MAX_REROUTES = 3
 FIRE_STOP_M = 0.15                       # the fire straight ahead, this close and nearer than the target: stop
-K_STEER = 150                            # motor power per radian of bearing error while homing
+HOP_M = 0.20                             # homing: drive at most this far between still pictures
+HOP_TURN_DEG = 8                         # ...and turn to face the victim first if it is further off-centre than this
+MAX_HOPS = 40
 TRACK_GATE_DEG = 12                      # victims look alike: a tracked blob must stay this close to where it was
 ACQUIRE_GATE_DEG = 25                    # ...and this close to the map's prediction when homing starts
-LOST_S = 2.0
 CLOSE_FRAC = 0.95                        # the tyre's floor contact this low in the image = right in front
 TOUCH_CREEP_M = 0.17                     # then creep this far, blind, to touch: at CLOSE_FRAC the wheel's near edge is
 #                                          ~0.22 m from the lens. TODO(calibrate): raise if it stops short, lower if it
@@ -212,9 +217,11 @@ STATUS = Status()
 
 # ---- perception -------------------------------------------------------------------------------------------------
 def floor_range(row, horizon=None):
-    """Floor range (m) of the point where an object meets the floor at image row `row`; None at/above the horizon."""
+    """Floor range (m) of the point where an object meets the floor at image row `row`; None at/above the horizon or
+    beyond MAX_RANGE_M (the arena is ~3 m deep; anything further is the room, not the arena)."""
     drop = row - (HORIZON_Y if horizon is None else horizon)
-    return None if drop < 4 else CAM_HEIGHT_M * F_PX / drop
+    r = CAM_HEIGHT_M * F_PX / drop if drop >= 4 else None
+    return r if r is not None and r <= MAX_RANGE_M else None
 
 
 def bearing_of(col):
@@ -277,7 +284,9 @@ def wheels_from_pucks(hsv):
 
 
 def find_fire(hsv):
-    """The largest tan blob standing on the floor; its (x, w) are the BASE's ends (the bottom 12 rows)."""
+    """The largest tan blob standing on the floor (its base below the horizon - curtains and chairs end above it);
+    its (x, w) are the BASE's ends (the bottom 12 rows). No 'bright floor just below' test here: the box casts a
+    shadow and a reflection on the glossy floor right under its base."""
     m = cv2.inRange(hsv, *TAN_HSV)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
@@ -285,9 +294,11 @@ def find_fire(hsv):
     for c in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
         x, y, w, h = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        if area < FIRE_MIN_AREA or floor_range(y + h) is None or not floor_below(hsv, x, w, y + h):
+        if area < FIRE_MIN_AREA or floor_range(y + h) is None:
             continue
         base = c[c[:, 0, 1] >= y + h - 12][:, 0, 0]
+        if (base.max() - base.min()) * floor_range(y + h) / F_PX < FIRE_MIN_WIDTH_M:   # a tan scrap, not the box
+            continue
         if best is None or area > best[0]:
             best = (area, Blob('fire', int(base.min()), y, int(base.max() - base.min()) + 1, y + h))
     return [best[1]] if best else []
@@ -539,7 +550,7 @@ class Uno(wb.Robot):
 
 class Nav:
     """The robot's pose in the map (the start pose's frame). Heading = the camera's integrated yaw minus an offset that
-    the fire re-anchors; position = dead reckoning (timed legs, arcs), re-anchored on the fire at the start.
+    the fire re-anchors; position = dead reckoning (timed legs, pivots), re-anchored on the fire at the start.
     `obstacle` = where the sonar last stopped a leg; `dead` = the motors will not turn the robot."""
 
     def __init__(self, robot, cam):
@@ -576,25 +587,25 @@ class Nav:
         self.y += dist * math.sin(self.th)
 
     def turn_to(self, target, state='turning'):
-        """ARC turn until the camera-measured heading is within TURN_TOL_DEG of `target` (rad). Forward and backward
-        arcs alternate so the robot stays roughly in place. False if it will not turn (self.dead is then set)."""
+        """PIVOT turn until the camera-measured heading is within TURN_TOL_DEG of `target` (rad). Forward and backward
+        pivots alternate so the robot stays roughly in place. False if it will not turn (self.dead is then set)."""
         tol, lead = math.radians(TURN_TOL_DEG), math.radians(TURN_LEAD_DEG)
         if abs(wrap(target - self.th)) <= tol:
             return True
-        DASH.say(f'Turning {math.degrees(wrap(target - self.th)):+.0f} deg (arcs)')
+        DASH.say(f'Turning {math.degrees(wrap(target - self.th)):+.0f} deg (pivots)')
         fwd, stalls = True, 0
-        for _ in range(MAX_ARCS):
+        for _ in range(MAX_PIVOTS):
             err = wrap(target - self.th)
             if abs(err) <= tol or STOP_EVENT.is_set():
                 break
             left = err > 0
-            powers = ARCS[left][0 if fwd else 1]
+            powers = PIVOTS[left][0 if fwd else 1]
             th0, t0, last = self.th, time.time(), time.time()
-            while time.time() - t0 < ARC_MAX_S and not STOP_EVENT.is_set():
+            while time.time() - t0 < PIVOT_MAX_S and not STOP_EVENT.is_set():
                 self.robot.drive(powers)
                 time.sleep(CYCLE_S)
                 now = time.time()
-                self._advance(ARC_MPS * (now - last) * (1 if fwd else -1))
+                self._advance(PIVOT_MPS * (now - last) * (1 if fwd else -1))
                 last = now
                 e = wrap(target - self.th)
                 if abs(e) <= lead or (e > 0) != left:              # there (allowing for lag), or crossed over
@@ -606,23 +617,25 @@ class Nav:
             if abs(wrap(self.th - th0)) < math.radians(STALL_DEG):
                 stalls += 1
                 if stalls >= MAX_STALLS:
-                    DASH.say('The arcs are not turning the robot - stopping (motor switch off? battery? stuck?)')
+                    DASH.say('The pivots are not turning the robot - stopping (motor switch off? battery? stuck?)')
                     self.dead = True
                     return False
-                DASH.say('That arc did not turn the robot - trying again')
+                DASH.say('That pivot did not turn the robot - trying again')
                 self.pause(1.0)
             else:
                 stalls = 0
             fwd = not fwd
         return abs(wrap(target - self.th)) <= tol * 1.5
 
-    def leg(self, dist, heading, backward=False, label=''):
+    def leg(self, dist, heading, backward=False, label='', quiet=False, checks=True):
         """Drive `dist` m with the robot FACING `heading`, forward or in reverse, holding that heading with the camera.
-        Forward legs stop for an obstacle (self.obstacle is then set). True if the whole distance was covered."""
+        Forward legs stop for an obstacle or the fire close ahead (unless checks=False: the final touch, next to the
+        box). True if the whole distance was covered."""
         self.obstacle = None
         if not self.turn_to(heading, f'lining up for {label}') and self.dead:     # a few degrees off is fine: the
             return False                                                          # leg holds the heading anyway
-        DASH.say(f'Driving {dist:.2f} m {"in reverse " if backward else ""}towards {label}')
+        if not quiet:
+            DASH.say(f'Driving {dist:.2f} m {"in reverse " if backward else ""}towards {label}')
         self.robot.aim(SONAR_CENTER_DEG)
         sign = -1 if backward else 1
         t0 = last = time.time()
@@ -636,7 +649,7 @@ class Nav:
                              wb.drive_powers(-(CRUISE + steer), -(CRUISE - steer)))
             steer_sum, n = steer_sum + steer, n + 1
             STATUS.state = f'driving {"back " if backward else ""}to {label}'
-            if not backward:
+            if not backward and checks:
                 fire_ahead = [b for b in self.cam.blobs if b.kind == 'fire' and b.range is not None
                               and b.range < FIRE_STOP_M and abs(b.bearing) < math.radians(20)]
                 if fire_ahead:
@@ -728,57 +741,43 @@ def relocalise(nav, fire):
 
 
 def home_on(nav, name, bearing, rng):
-    """Visual servo onto the victim the map predicts at (bearing, rng) from here: lock on the blob that best fits the
-    prediction, track it by bearing until its floor contact nears the bottom of the image, then creep TOUCH_CREEP_M
-    blind to touch it. True when touched; False if it is lost or the fire/an obstacle is in the way."""
-    robot, cam = nav.robot, nav.cam
-    robot.aim(SONAR_CENTER_DEG)
+    """Stop-and-go homing onto the victim the map predicts at (bearing, rng) from here: look at a STILL picture (in
+    this light a moving camera blurs the thin yellow rim away), turn to face the victim if it is off to one side, drive
+    a short hop towards it, repeat. When its floor contact nears the bottom of the image it is right in front: creep
+    TOUCH_CREEP_M blind to touch it. True when touched; False if it is lost or an obstacle/the fire is in the way."""
+    nav.robot.aim(SONAR_CENTER_DEG)
     nav.obstacle = None
-    track, gate, last_seen, last, locked = bearing, math.radians(ACQUIRE_GATE_DEG), time.time(), time.time(), False
-    while not STOP_EVENT.is_set():
-        blobs = cam.snap(time.time() - 0.05, timeout=0.3)
-        now = time.time()
+    track, gate, misses = bearing, math.radians(ACQUIRE_GATE_DEG), 0
+    for _ in range(MAX_HOPS):
+        if STOP_EVENT.is_set():
+            return False
+        blobs = [b for frame in nav.look(2) for b in frame]          # two still photos
         mine = [b for b in blobs if b.kind == 'victim' and b.range is not None and abs(b.bearing - track) < gate]
         if not mine:
-            robot.drive(wb.STOP)
-            last = now
-            if now - last_seen > LOST_S:
+            misses += 1
+            if misses >= 3:
                 DASH.say(f'Lost sight of victim {name}')
                 return False
             continue
-        b = (min(mine, key=lambda b: abs(b.bearing - track)) if locked else
-             min(mine, key=lambda b: (math.degrees(b.bearing - bearing) / 3) ** 2 + ((b.range - rng) / 0.15) ** 2))
-        locked = True
-        track, gate, last_seen = b.bearing, math.radians(TRACK_GATE_DEG), now
+        misses = 0
+        b = (min(mine, key=lambda b: (math.degrees(b.bearing - bearing) / 3) ** 2 + ((b.range - rng) / 0.15) ** 2)
+             if gate > math.radians(TRACK_GATE_DEG) else min(mine, key=lambda b: abs(b.bearing - track)))
+        STATUS.state = f'homing on victim {name}: {b.label()}'
         if b.bottom >= H * CLOSE_FRAC:
             DASH.say(f'Victim {name} is right in front - creeping {TOUCH_CREEP_M * 100:.0f} cm to touch it')
-            t_end = time.time() + TOUCH_CREEP_M / CRUISE_MPS
-            while time.time() < t_end and not STOP_EVENT.is_set():
-                robot.drive(wb.drive_powers(CRUISE, CRUISE))
-                time.sleep(CYCLE_S)
-            nav._advance(TOUCH_CREEP_M)
+            nav.leg(TOUCH_CREEP_M, nav.th, label=f'victim {name}', quiet=True, checks=False)
             nav.pause(0.5, f'touching victim {name}')
-            nav.moved()
             return True
-        for f in blobs:
-            if f.kind == 'fire' and f.range is not None and abs(f.bearing) < math.radians(20) \
-                    and f.range < FIRE_STOP_M and f.range < b.range - 0.05:
-                nav.pause(0.3, 'FIRE AHEAD - stopping')
-                DASH.say(f'FIRE {f.range:.2f} m straight ahead, nearer than the victim - stopped')
+        if abs(b.bearing) > math.radians(HOP_TURN_DEG):              # off to one side: face it first
+            nav.turn_to(wrap(nav.th + b.bearing), f'facing victim {name}')
+            track, gate = 0.0, math.radians(TRACK_GATE_DEG)
+            continue
+        hop = max(0.05, min(HOP_M, 0.6 * (b.range - reach_distance())))
+        if not nav.leg(hop, wrap(nav.th + b.bearing), label=f'victim {name}', quiet=True):
+            if nav.obstacle is not None:
                 return False
-        cm = robot.ping()
-        if cm is not None and cm < OBSTACLE_CM and cm / 100 < b.range - 0.10:
-            nav.pause()
-            r = cm / 100 + 0.08
-            nav.obstacle = (nav.x + r * math.cos(nav.th), nav.y + r * math.sin(nav.th))
-            DASH.say(f'OBSTACLE {cm} cm ahead (victim {name} is {b.range:.2f} m) - stopped')
-            return False
-        steer = max(-70, min(70, K_STEER * track))                  # + bearing (left) -> right side faster
-        robot.drive(wb.drive_powers(CRUISE - steer, CRUISE + steer))
-        nav._advance(CRUISE_MPS * (now - last))
-        last = now
-        nav.moved()
-        STATUS.state = f'homing on victim {name}: {b.label()}'
+        track, gate = 0.0, math.radians(TRACK_GATE_DEG)              # it should be dead ahead now
+    DASH.say(f'Victim {name}: too many hops - giving up')
     return False
 
 
@@ -1059,11 +1058,12 @@ def selftest():
     band = np.float32(cv2.GaussianBlur(np.random.default_rng(1).random((230, 480)), (0, 0), 3))
     assert math.degrees(rotation(band, np.roll(band, 40, axis=1))[0]) > 3
     assert math.degrees(rotation(band, np.roll(band, -40, axis=1))[0]) < -3
-    # arcs: both arcs of a turn turn the SAME way, and all wheels roll the same direction (no skid)
-    for left, (fwd, back) in ARCS.items():
+    # pivots: both pivots of a turn rotate the SAME way; each moves one side only (never a skid)
+    for left, (fwd, back) in PIVOTS.items():
         lf, rf = fwd[0] * wb.FORWARD_SIGN[0], fwd[3] * wb.FORWARD_SIGN[3]
         lb, rb = back[0] * wb.FORWARD_SIGN[0], back[3] * wb.FORWARD_SIGN[3]
-        assert (rf - lf > 0) == left and (rb - lb > 0) == left and min(lf, rf) > 0 and max(lb, rb) < 0
+        assert (rf - lf > 0) == left and (rb - lb > 0) == left, (left, fwd, back)
+        assert 0 in (lf, rf) and 0 in (lb, rb) and max(lf, rf) > 0 and min(lb, rb) < 0
     json.loads(DASH.json())
     print('selftest: OK')
 
