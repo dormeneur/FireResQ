@@ -41,6 +41,7 @@ import argparse
 import json
 import math
 import signal
+import socket
 import statistics
 import threading
 import time
@@ -394,6 +395,15 @@ def rotation(prev, cur):
     return math.atan2(dx, F_PX), conf
 
 
+class DualStackServer(ThreadingHTTPServer):
+    """IPv6 AND IPv4: a PC that resolves pi.local to the Pi's IPv6 address (seen 2026-10-22) is otherwise refused."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 class Camera:
     """Grabs, rotates and detects continuously; integrates the heading change frame to frame (`yaw`); serves the
     dashboard: / (page), /stream (MJPEG), /state (JSON). snap() hands out the first frame captured after a given time,
@@ -414,10 +424,17 @@ class Camera:
                                                      queue=False, buffer_count=2))
         cam.start()
         threading.Thread(target=self._grab, args=(cam,), daemon=True).start()
-        server = ThreadingHTTPServer(('0.0.0.0', WEB_PORT), self._handler())
+        server = DualStackServer(('::', WEB_PORT), self._handler())
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        print(f'DASHBOARD: open http://pi.local:{WEB_PORT} in a browser on your PC', flush=True)
+        try:                                                        # the Pi's LAN address (no packet is sent)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as u:
+                u.connect(('10.255.255.255', 1))
+                ip = u.getsockname()[0]
+        except OSError:
+            ip = 'the-pi-address'
+        print(f'DASHBOARD: open http://pi.local:{WEB_PORT}  or  http://{ip}:{WEB_PORT}  in a browser on your PC',
+              flush=True)
 
     def _grab(self, cam):
         n, t_fps = 0, time.time()
