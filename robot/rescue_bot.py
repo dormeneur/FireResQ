@@ -114,13 +114,15 @@ SPIN_POWER = 255
 SPINS = {True: (wb.drive_powers(-SPIN_POWER, SPIN_POWER),) * 2,      # LEFT: left side back, right side forward
          False: (wb.drive_powers(SPIN_POWER, -SPIN_POWER),) * 2}     # RIGHT: left side forward, right side back
 SPIN_MAX_S = 1.0                         # longest single spin pulse
-SPIN_MIN_S = 0.15                        # shortest: a skid spin needs this long to break the tyres loose
+SPIN_MIN_S = 0.3                         # shortest: a skid spin from standstill needs this long to break loose
+UNSTICK_S = 0.15                         # after 2 pulses that did not turn it: a nudge forward and back first
+#                                          (rolling wheels slip round far more easily than tyres stuck to the tile)
 SPIN_RATE_DPS = 26.0                     # measured 2026-10-22: a 1 s spin at full power turned 26 deg either way.
 #                                          Only the starting guess - every pulse re-measures it
 TURN_TOL_DEG = 3.0
 SPIN_AIM = 0.8                           # aim each pulse at this fraction of what is left (then measure, add more)
 STALL_DEG = 1.0                          # an arc that turned less than this did not move the robot
-MAX_STALLS = 6
+MAX_STALLS = 8
 MAX_SPINS = 24                           # give up a turn after this many spins (it is oscillating or stuck)
 CRUISE = round(210 * POWER_SCALE)        # forward power for legs and homing
 CRUISE_MPS = 0.25                        # TODO(calibrate): forward speed at CRUISE. Reverse return cancels its error
@@ -629,7 +631,8 @@ class Nav:
         self.yaw0 = cam.yaw
         self.obstacle = None
         self.dead = False
-        self.spin_rate = SPIN_RATE_DPS                              # deg/s, learned from every spin
+        self.spin_rate = {True: SPIN_RATE_DPS, False: SPIN_RATE_DPS}   # deg/s left / right, learned from every
+        #                                                               spin (measured 23.6 left vs 7.8 right once)
 
     @property
     def th(self):
@@ -672,22 +675,28 @@ class Nav:
             err = wrap(target - self.th)
             if abs(err) <= tol or STOP_EVENT.is_set():
                 break
-            t = max(SPIN_MIN_S, min(SPIN_MAX_S, SPIN_AIM * abs(math.degrees(err)) / self.spin_rate))
+            left = err > 0
+            t = max(SPIN_MIN_S, min(SPIN_MAX_S, SPIN_AIM * abs(math.degrees(err)) / self.spin_rate[left]))
+            if stalls >= 2:                                         # stuck to the floor: roll a little first
+                hold(self.robot, STATUS, wb.drive_powers(CRUISE, CRUISE), UNSTICK_S, f'{state}: unsticking')
+                hold(self.robot, STATUS, wb.drive_powers(-CRUISE, -CRUISE), UNSTICK_S, f'{state}: unsticking')
             th0 = self.th
-            hold(self.robot, STATUS, SPINS[err > 0][0], t, f'{state}: {math.degrees(err):+.0f} deg to go')
+            hold(self.robot, STATUS, SPINS[left][0], t, f'{state}: {math.degrees(err):+.0f} deg to go')
             self.pause(0.3, state)                                  # stopped: let the camera catch up, then judge
             self.moved()
             turned = abs(math.degrees(wrap(self.th - th0)))
+            DASH.say(f'  spin pulse {t:.2f} s {"left" if left else "right"}: turned {turned:.1f} deg')
             if turned < STALL_DEG:
                 stalls += 1
                 if stalls >= MAX_STALLS:
-                    DASH.say('The spins are not turning the robot - stopping (motor switch off? battery? stuck?)')
+                    DASH.say('The spins are not turning the robot - stopping. If the wheels did not even move: motor '
+                             'switch / battery / a loose motor wire. If they spun in place: the tyres slip.')
                     self.dead = True
                     return False
-                self.spin_rate = max(5.0, self.spin_rate * 0.7)    # it skidded: the next pulse is longer
+                self.spin_rate[left] = max(5.0, self.spin_rate[left] * 0.7)   # it skidded: next pulse longer
                 continue
             stalls = 0
-            self.spin_rate = 0.5 * self.spin_rate + 0.5 * turned / t
+            self.spin_rate[left] = 0.5 * self.spin_rate[left] + 0.5 * turned / t
         return abs(wrap(target - self.th)) <= tol * 1.5
 
     def leg(self, dist, heading, backward=False, label='', quiet=False, checks=True, obstacle_cm=OBSTACLE_CM):
