@@ -15,13 +15,16 @@
 
 const uint8_t TRIG_PIN = A3, ECHO_PIN = A4;
 const uint8_t SERVO_PIN = 10;                 // shield SERVO 1
+const int SERVO_CENTER_DEG = 128;             // the angle that points the sonar STRAIGHT AHEAD on this robot (found by
+                                              // hand; keep in step with SONAR_CENTER_DEG in rescue_bot.py). The servo
+                                              // goes here at power-on, so it never starts off-centre
 const unsigned long WATCHDOG_MS = 400;
 const unsigned SERVO_STEP_MS = 20;            // ~50 degrees/second
 
 AF_DCMotor motor[4] = {AF_DCMotor(1), AF_DCMotor(2), AF_DCMotor(3), AF_DCMotor(4)};
 Servo servo;
 int applied[4] = {0, 0, 0, 0};
-int servoDeg = 90, servoTarget = 90, replyDeg = -1;
+int servoDeg = SERVO_CENTER_DEG, servoTarget = SERVO_CENTER_DEG, replyDeg = -1;
 unsigned long lastStepMs = 0, settleUntil = 0;
 unsigned long lastCmd = 0;
 bool driving = false;

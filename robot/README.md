@@ -8,25 +8,23 @@ What is actually built (October 2026):
 | Computer | Raspberry Pi 3B (905 MB RAM, Debian 13, no ROS), `ssh pi@pi.local` |
 | Motor controller | Arduino Uno + L293D shield (Adafruit Motor Shield v1), USB serial `/dev/ttyUSB0`, 115200 baud |
 | Drive | 4 TT motors, **no encoders**. M1 front-left, M4 front-right, M2 back-left, M3 back-right. One motor is slower |
-| Power | Motors: 8×AA as two 4-cell packs **in parallel** (6 V) on EXT_PWR, PWR jumper OFF. Pi: its own power bank |
+| Power | Motors: 8×AA as two 4-cell packs **in parallel** (6 V) through the motor switch to EXT_PWR, PWR jumper OFF. Pi: its own power bank |
 | Camera | OV5647 ribbon camera (Picamera2), **mounted rotated 90° clockwise**: every frame is rotated 90° CCW first |
-| Range | HC-SR04 sonar on a servo (SERVO 1 = D10), TRIG A3, ECHO A4; straight ahead is servo 128° |
+| Range | HC-SR04 sonar on a servo (SERVO 1 = D10), TRIG A3, ECHO A4; straight ahead is servo **128°** |
 
-**The task:** the fire is the red shoe box; the victims are yellow-hubbed wheels on the floor. Survey from the start,
-rank the victims by distance to the fire, then for each in that order drive right up to it and come back to the start.
-Every run maps afresh, so the wheels can be moved: nothing about the layout is in the code.
+## The task
 
-The ROS 2 stack in `src/` cannot run on this robot (Pi 3B, no encoders, no depth camera, no ROS installed), so it runs
-plain Python. The Pi keeps the files in `~/rescue` (a copy of this folder).
+The **fire** is the tan cardboard box; the **victims** are wheels lying flat on the floor. Everything is placed in
+front of the robot, in view from its start spot, so it never scans by turning. Each round the robot:
 
-| File | What |
-| --- | --- |
-| `rescue_bot.py` | **The mission**, its dashboard server, calibration modes and self-tests |
-| `dashboard.html` | The web dashboard (live camera, map, actions, reasoning), served by `rescue_bot.py` |
-| `wander_bot.py` | Obstacle-avoiding wanderer, proven on the robot; `rescue_bot.py` reuses its serial and drive code |
-| `wander_fw.ino` / `.hex` | Uno firmware: `M a b c d` motor powers (400 ms watchdog), `U`/`G`/`P` servo + sonar |
-| `servo.py` | Point the sonar servo at an angle and read the distance there |
-| `calibration.json` | Written by `--calibrate-horizon` (not in git: it belongs to one robot's camera mount) |
+1. looks (it stays put; the sonar servo, already centred, sweeps left and right),
+2. finds the fire and every victim, and picks the victim **closest to the fire**,
+3. drives to it and touches it, on a route that keeps clear of the box,
+4. reverses back to the start spot,
+5. waits for you to lift that victim away, then looks again and takes the next closest one.
+
+It stops when no victim is left in view. Nothing about the layout is in the code: every round decides afresh, so the
+wheels can be anywhere it can see.
 
 ## Run it
 
@@ -34,83 +32,82 @@ plain Python. The Pi keeps the files in `~/rescue` (a copy of this folder).
 scp robot/*.py robot/dashboard.html robot/wander_fw.hex pi@pi.local:~/rescue/
 ssh pi@pi.local
 cd ~/rescue
-python3 -u rescue_bot.py --selftest                # the maths, no hardware (~1 s)
-python3 -u rescue_bot.py --view                    # camera + detection only, motors untouched
-python3 -u rescue_bot.py --calibrate-horizon 1.0   # ONCE: one wheel at a measured 1.00 m straight ahead (no motors)
-python3 -u rescue_bot.py --survey                  # survey, map and rank; turns in place, drives nowhere
-python3 -u rescue_bot.py                           # THE MISSION, started at the start spot facing the arena
+sudo systemctl stop targetfire                   # the drone project starts at boot and holds the camera
+python3 -u rescue_bot.py --selftest              # the maths and the detector, no hardware (~1 s)
+python3 -u rescue_bot.py --plan                  # look and decide, never moves: check it picked the right one
+python3 -u rescue_bot.py                         # THE MISSION - start it with the MOTOR SWITCH OFF
 ```
 
-Watch it on **http://pi.local:8090**: live camera (top left), the map with the fire's safety ring, the victims
-labelled A/B/C left to right with their rescue rank, the planned route, the robot and its trail (top right), what the
-robot is doing (bottom left) and why (bottom right). The map is built from the camera; it is not lidar SLAM.
+**When to switch the motors on:** start the mission with the motor switch **off**. The robot centres the servo,
+looks around, finds the fire and victims and decides, while the wheels stay still. Then the dashboard (and the
+terminal) say **"READY: switch the MOTOR battery ON now - moving in 15 s"**. Switch it on then. If the motors stay
+off, the first turn finds the robot not moving and the mission stops itself.
 
-If `targetfire.service` (the drone project) is running it holds the camera: `sudo systemctl stop targetfire` first.
+Watch it on **http://pi.local:8090**: the live camera (top left), the map with the start point, the fire's base edge,
+the victims with their rank, the route and the robot's trail (top right), what it is doing (bottom left) and why
+(bottom right).
 
-## Depth: how a flat picture gives distances, and why the order comes out right
+## How it sees
 
-The camera is 10 cm above a flat floor, looking level, so the horizon is a fixed image row. A point on the floor
-*N* pixels below the horizon is at
+In this room's light, colour alone cannot separate things: the box, the wheels' yellow, a chair and the curtain all
+read as dull tan/olive. What stands out is the bright floor (V 160–180), so:
 
-    range = (camera height − z) × focal length (px) / N
+- **Victim** = a wheel lying flat: a thin pale-yellow rim directly on top of a near-black tyre band, which ends on
+  bright floor. Its real width must be wheel-sized. Fallback: a small dark puck sitting on the floor.
+- **Fire** = the largest tan blob whose base stands on the floor. Only its base counts (a chair behind the box merges
+  into the blob higher up).
 
-where *z* is the point's height (0 for the box's base, the wheel radius for a hub's centre). With the bearing from the
-pixel column, every sighting becomes a point on the floor. Object *size* is not used: a hub is ~15 px tall at 2 m, so
-a pixel is a 7% error.
+**Depth.** The camera is 10 cm above a flat floor, looking level, so the horizon is a fixed image row. Where an object
+meets the floor *N* pixels below the horizon it is `0.10 × focal length / N` metres away; the pixel column gives its
+bearing. A pixel row is ~2 cm at 1 m, ~9 cm at 2 m.
 
-The catch is that the error grows with range squared: a pixel row is ~2 cm at 1 m but ~9 cm at 2 m for a hub. What
-matters is only the **order**, "which victim is closest to the fire", and four things protect it:
+**Closest to the fire** means the distance to the box's **base edge**, a 40 cm segment on the floor. A wheel by a
+corner of the box is close to the fire even though it is far from the box's centre. Each victim's distance is
+measured inside each photo, against the fire in the same photo, so the robot's own position errors cancel; the
+median over 6 photos is used. An object must appear in most photos to count.
 
-1. **Same-photo distances.** Each victim's distance to the fire is measured between the two *in the same frame*
-   wherever both are in view, so the robot's own position and heading errors cancel exactly.
-2. **Many photos.** Three frames per view, each object seen from 2–3 views, medians throughout. Two blobs in one photo
-   are always two objects; one far wheel is never split in two (its range tolerance grows with its range error).
-3. **Close calls are re-measured from nearer.** If two victims' fire distances differ by less than twice their
-   combined uncertainty, the robot drives halfway to the fire, where a pixel costs a quarter of the depth, and looks
-   again.
-4. **Identity by bearing *and* range.** Victims look alike, so the robot always picks "which wheel is that" by
-   both, each weighed by its own expected error. Bearing alone confuses wheels that line up, especially after a few
-   degrees of heading drift.
-
-`--robustness` measures it: 2000 random arenas with a simulated camera (1.5 px noise per frame, heading drift, and a
-2 px camera-tilt error shared by every picture). The rescue order is right in:
-
-| Smallest gap between the victims' true fire distances | uncalibrated tilt (2 px) | after `--calibrate-horizon` (~0.5 px) |
-| --- | --- | --- |
-| 30 cm or more | 98.8% | 99.7% |
-| 20–30 cm | 95.5% | 97.4% |
-| 10–20 cm | 92.9% | 96.4% |
-| under 10 cm | 70% | 75% |
-
-Under ~10 cm apart the camera can't reliably tell them apart from where it stands; the dashboard says "too close to
-call" and shows the uncertainty. A wheel standing *directly behind* the box or another wheel, as seen from the start,
-can't be seen at all (about 1 arena in 10 when the wheels are placed at random).
+`--calibrate-horizon 1.0` (one wheel at a measured 1.00 m, lens to its near edge) measures the camera's tilt, the
+biggest depth error, into `calibration.json` (kept out of git: it belongs to one camera mount).
 
 ## Moving without encoders
 
-Measured on the floor, 2026-10-20: skid and pivot turns do not reliably turn this robot on tile (all four motors are
-fine in the air). So:
+Skid and pivot turns don't reliably turn this robot on tile (all four motors are fine in the air), so:
 
-- **Turns are arcs.** All wheels roll forward (or all backward), one side slower; a forward arc then a backward arc
-  turns it roughly on the spot. No wheel is dragged sideways.
-- **Heading comes from the camera.** The camera thread adds up the sideways image shift between every pair of
-  consecutive frames, so a jerky turn can never outrun it. Turns run until that heading is reached.
-- **Straight legs hold that heading.** This also cancels the slow motor's pull. If the steering stays biased, the
-  log prints `steering bias` and `WEAK_MOTOR` / `WEAK_RATIO` need tuning.
-- **The way back is driven in reverse** along the same route, so the robot never turns round and a wrong
-  `CRUISE_MPS` cancels out. Then the fire, seen from the start, re-anchors heading and position.
-- **Reaching a victim.** The robot homes in on the wheel with the camera until the hub reaches the bottom of the
-  frame (~15 cm), then creeps 3 cm blind, leaving a gap of about 5 cm.
-- **Safety stops.** The sonar stops any forward leg for an obstacle (it goes on the map and the route is re-planned
-  round it), and the camera stops it if the fire is within 25 cm ahead.
+- **Turns are arcs.** All wheels roll, one side slower; a forward arc then a backward arc turns it roughly on the
+  spot.
+- **Heading comes from the camera.** The camera thread adds up the image shift between consecutive frames.
+- **Straight legs hold that heading.** This also cancels the slow motor's pull. If the log keeps printing
+  `steering bias`, tune `WEAK_MOTOR` / `WEAK_RATIO`.
+- **Reaching a victim.** The robot homes in on it with the camera until it is right in front (~22 cm), then creeps
+  `TOUCH_CREEP_M` (17 cm) blind to touch it.
+- **The way home is driven in reverse along the same route,** so a wrong `CRUISE_MPS` cancels out. Then the fire,
+  seen from the start, re-anchors position and heading.
+- **Safety stops.** Forward legs stop for a sonar obstacle (it goes on the map and the route is re-planned) or for
+  the fire close ahead. The Uno's firmware releases every motor if the Pi goes quiet for 0.4 s.
+
+## Firmware
+
+`wander_fw.ino` (compiled to `wander_fw.hex`): `M a b c d` motor powers with a 400 ms watchdog, plus `U`/`G`/`P`
+servo and sonar. At power-on it releases the motors and points the servo straight ahead (128°). It never moves on
+its own.
+
+If the car drives or sweeps by itself when the motor switch goes on, the Uno has other firmware on it (a car kit's
+obstacle-avoider does exactly that). Put ours back:
+
+```bash
+avrdude -p atmega328p -c arduino -P /dev/ttyUSB0 -b 115200 -U flash:w:/home/pi/rescue/wander_fw.hex:i
+```
+
+Rebuild it after editing (`arduino-cli`, AVR core, "Adafruit Motor Shield library" and Servo):
+`arduino-cli compile -b arduino:avr:uno --output-dir out wander_fw`.
 
 ## Calibration knobs (top of `rescue_bot.py`)
 
 | Knob | Status |
 | --- | --- |
-| `COLOURS` | Sampled in this room's dim light. Hubs: H 20–33, S ≥ 150, V ≥ 70 (the yellow cardboard box is duller). Retune with `--view` if the light changes |
-| `HORIZON_Y` | 318 by default; `--calibrate-horizon` measures it properly into `calibration.json` |
-| `CAM_HEIGHT_M`, `HFOV_DEG` | 0.10 m, 41.4° (OV5647 spec). A wrong value scales every distance alike, so the order is unaffected |
-| `SONAR_CENTER_DEG` | 128, found by hand with `servo.py` |
-| `WEAK_MOTOR`, `WEAK_RATIO` | M3 at 85%, a guess from the old `robot.yaml`. Tune from the `steering bias` lines |
+| `RIM_HSV`, `TAN_HSV`, `FLOOR_V`, `DARK_V` | Sampled in this room, 2026-10-21. Re-sample with `--view` if the light changes a lot |
+| `HORIZON_Y` | 318 by default; `--calibrate-horizon` measures it |
+| `TOUCH_CREEP_M` | 0.17 m: raise it if the robot stops short of the wheel, lower it if it pushes the wheel |
+| `SONAR_CENTER_DEG` | 128 (also `SERVO_CENTER_DEG` in the firmware) |
+| `WEAK_MOTOR`, `WEAK_RATIO` | M3 at 85%, a guess. Tune from the `steering bias` lines |
 | `CRUISE_MPS` | 0.25 m/s, a guess. The reverse return and the fire re-anchoring make it matter little |

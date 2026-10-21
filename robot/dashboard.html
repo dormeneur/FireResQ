@@ -152,6 +152,11 @@ function draw(s) {
   for (const o of s.objs) {
     const [px, py] = P(o.x, o.y);
     if (o.kind === 'fire') {
+      if (o.ax !== undefined) {                                   // the box's base edge, as seen on the floor
+        const [ax, ay] = P(o.ax, o.ay), [bx, by] = P(o.bx, o.by);
+        ctx.strokeStyle = css('--fire'); ctx.lineWidth = 7; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.lineCap = 'butt';
+      }
       ctx.fillStyle = css('--fire'); ctx.beginPath(); ctx.arc(px, py, 11, 0, 2 * Math.PI); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.fillText('🔥', px, py + 4);
       ctx.textAlign = 'left'; ctx.fillStyle = css('--fire'); ctx.font = '12px system-ui'; ctx.fillText('FIRE', px + 14, py + 4);
@@ -162,7 +167,7 @@ function draw(s) {
       if (target) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(px, py, 15, 0, 2 * Math.PI); ctx.stroke(); }
       ctx.fillStyle = '#111'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.fillText(o.name, px, py + 4);
       ctx.textAlign = 'left'; ctx.fillStyle = o.reached ? css('--done') : css('--victim'); ctx.font = '12px system-ui';
-      ctx.fillText(`#${o.rank}${o.reached ? ' ✓' : ''}${target ? '  ← target' : ''}`, px + 16, py + 4);
+      ctx.fillText(`${o.reached ? 'saved ✓' : '#' + o.rank}${target ? '  ← target' : ''}`, px + 16, py + 4);
     }
   }
   // robot

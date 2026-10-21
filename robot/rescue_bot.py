@@ -1,52 +1,46 @@
 #!/usr/bin/env python3
 """FIRERESQ RESCUE BOT - run ON THE PI, from the same folder as wander_bot.py, wander_fw.hex and dashboard.html.
 
-THE TASK. A fire (the red shoe box) and victims (yellow-hubbed wheels) stand on the floor. From its start spot the
-robot surveys, maps them, ranks the victims by how close each is to the fire, then for each in that order: drives
-right up to it on a route that keeps clear of the fire, and comes back to the start. It ends at the start, facing the
-arena. Nothing is hardcoded: every run maps the arena afresh, so the wheels can be anywhere it can see.
+THE TASK. In front of the robot stand a FIRE (the tan cardboard box) and VICTIMS (wheels lying flat on the floor).
+Everything is in view from the start spot, so the robot never scans by turning. Each round it:
+    1. looks (wheels still; the sonar servo, centred first, sweeps left and right),
+    2. finds the fire and every victim, and picks the victim CLOSEST TO THE FIRE,
+    3. drives to it and touches it (on a route that keeps clear of the box),
+    4. reverses back to the start spot (the home region),
+    5. waits for you to lift that victim away, then looks again for the next one.
+It stops when no victim is left in view. Nothing about the layout is in the code: every round decides afresh.
 
     python3 -u rescue_bot.py --view          # camera + detection only, motors untouched
-    python3 -u rescue_bot.py --survey        # survey, map and rank - turns in place, does not drive anywhere
-    python3 -u rescue_bot.py                 # THE MISSION (5 s countdown)
-    python3 -u rescue_bot.py --sonar-cal     # flat object 30 cm straight ahead: checks SONAR_CENTER_DEG (no motors)
-    python3 -u rescue_bot.py --selftest      # the maths, no hardware
-    python3 -u rescue_bot.py --robustness    # Monte-Carlo: how often the ranking is right, given the camera's noise
-    python3 -u rescue_bot.py --calibrate-horizon 1.0   # ONE wheel at a measured 1.00 m straight ahead (no motors):
-                                             # measures the camera's tilt, the biggest depth error, into calibration.json
+    python3 -u rescue_bot.py --plan          # look and decide, print/show the plan - never moves
+    python3 -u rescue_bot.py                 # THE MISSION. Start it with the MOTOR SWITCH OFF: it says when
+    python3 -u rescue_bot.py --calibrate-horizon 1.0   # ONE wheel 1.00 m ahead (lens to its near edge), no motors
+    python3 -u rescue_bot.py --sonar-cal     # book 30 cm straight ahead: checks SONAR_CENTER_DEG (no motors)
+    python3 -u rescue_bot.py --selftest      # the maths and the detector on a synthetic picture, no hardware
 
-DASHBOARD: http://pi.local:8090 - live camera, the map, what the robot is doing, and why.
+DASHBOARD: http://pi.local:8090 - live camera, the map (start, fire, victims, route, the robot's trail), what the
+robot is doing, and why.
 
-DEPTH - how a flat camera picture gives distances on the floor
-    The camera is CAM_HEIGHT_M above a flat floor and looks level, so the horizon is a fixed image row (HORIZON_Y).
-    A point on the floor N pixels below the horizon lies on a ray that dips atan(N / F_PX) below level, and that ray
-    meets the floor at   range = (CAM_HEIGHT_M - z) * F_PX / N,   where z is the point's own height above the floor
-    (0 for the box's base, the wheel radius for a hub's centre). The bearing comes from the pixel column. So every
-    sighting becomes an (x, y) on the floor. Pixel height (object size) is NOT used: a hub is ~15 px tall at 2 m,
-    so one pixel is a 7% range error, where the floor geometry is much steadier.
-    The error grows with range squared: one pixel row is ~2 cm at 1 m and ~9 cm at 2 m for a hub. Hence three
-    defences for the ORDER (which is all that matters - "who is closest to the fire"):
-      1. Same-photo distances. A victim's distance to the fire is measured between the two of them IN THE SAME
-         PHOTO wherever both are in view, so the robot's own position and heading errors cancel exactly.
-      2. Many photos. Every view takes several frames and every object is seen from 2-3 views; medians throughout.
-      3. Close calls are re-measured from nearer. If two victims' fire distances differ by less than their
-         measurement uncertainty, the robot drives halfway to the fire (a quarter of the error) and looks again.
-    --robustness quantifies all of it against simulated pixel noise.
+HOW IT SEES (measured in this room, 2026-10-21). In this light colour alone cannot separate things: the box, the
+wheels' yellow, a chair and the curtain all read as dull tan/olive. What does stand out is the bright floor
+(V 160-180). So:
+    VICTIM = a wheel lying flat: a thin pale-yellow rim directly on top of a near-black tyre band, which ends on
+             bright floor. (Fallback: a small dark puck sitting on the floor.) Its real width must be wheel-sized.
+    FIRE   = the largest tan blob whose base sits on the floor. Only its BASE is used - a chair behind it merges
+             into the blob higher up.
+DEPTH. The camera is CAM_HEIGHT_M above a flat floor and looks level, so the horizon is a fixed image row. Where an
+object meets the floor N pixels below the horizon, it is   range = CAM_HEIGHT_M * F_PX / N   away; the bearing is
+the pixel column. "Closest to the fire" is the victim's distance to the box's BASE EDGE (a segment on the floor:
+the box is ~40 cm wide, so a wheel by its corner is close to the fire even if far from its centre), measured inside
+each photo (the robot's own errors cancel) and taken as the median over several photos.
 
-MOVING WITHOUT ENCODERS (measured on this robot, 2026-10-20). Skid or pivot turns do not reliably turn it on
-tile, so turns are ARCS: all wheels roll forward (or all backward), one side slower; a forward arc then a backward arc
-turns it roughly on the spot. HEADING comes from the camera: the camera thread adds up the sideways shift between
-every pair of consecutive frames (phase correlation) - never a big jump, so never lost. Straight legs hold that heading
-(which also cancels the weak motor's pull) and are timed (CRUISE_MPS). The way back is driven IN REVERSE along the
-same route, so the robot never turns round and a wrong CRUISE_MPS cancels out; then the fire's position, seen from the
-start, re-anchors heading and position.
-Map frame = the start pose: x forward, y left, angles CCW (+ = left).
+MOVING (no encoders; skid and pivot turns do not turn this robot on tile): turns are ARCS (all wheels roll, one side
+slower; forward then backward arcs), heading comes from the camera (image shift between consecutive frames), straight
+legs hold that heading and are timed, the way home is driven IN REVERSE along the same route, and the fire, seen from
+the start, re-anchors position and heading. Map frame = the start pose: x forward, y left, angles CCW (+ = left).
 """
 import argparse
-import collections
 import json
 import math
-import random
 import signal
 import statistics
 import threading
@@ -69,27 +63,24 @@ F_PX = (W / 2) / math.tan(math.radians(HFOV_DEG / 2))
 CAM_HEIGHT_M = 0.10                      # lens above the floor
 CAMERA_FPS = 12
 WEB_PORT = 8090
-DASHBOARD_HTML = Path(__file__).resolve().parent / 'dashboard.html'
-VO_ROWS = (100, 330)                     # band used to track rotation: mostly ABOVE the horizon, where distant walls
-#                                          barely shift as the robot moves forward (floor texture would)
-VO_MIN_CONF = 0.05                       # frame-to-frame match quality below this is ignored (motion blur, a blank wall)
-
-# ---- what to look for: HSV (OpenCV: H 0-179), sampled from this camera in the room's light on 2026-10-20 ----------
-COLOURS = {
-    'fire':   [((0, 150, 60), (8, 255, 255)), ((170, 150, 60), (179, 255, 255))],     # red shoe box
-    'victim': [((20, 150, 70), (33, 255, 255))],     # yellow wheel hubs (cardboard is duller: S 140-170, V 50-77)
-}
-ROUND = {'victim': (0.5, 2.0)}           # allowed width/height of a blob: a hub is round, a stripe of cardboard is not
-MIN_AREA = {'fire': 300, 'victim': 60}   # px of the upright image; smaller blobs are noise
-Z_M = {'fire': 0.0, 'victim': 0.0325}    # height of the point whose floor range is measured: box base, hub centre
-HORIZON_Y = 318                          # image row of the horizon (camera tilt). Measured: the box's base agrees with
-#                                          its size here. --calibrate-horizon measures it properly (saved below)
-CAL_FILE = Path(__file__).resolve().parent / 'calibration.json'
+HERE = Path(__file__).resolve().parent
+DASHBOARD_HTML = HERE / 'dashboard.html'
+VO_ROWS = (100, 330)                     # band used to track rotation: mostly above the horizon (distant things)
+VO_MIN_CONF = 0.05                       # frame-to-frame match quality below this is ignored (motion blur)
+HORIZON_Y = 318                          # image row of the horizon (camera tilt); --calibrate-horizon measures it
+CAL_FILE = HERE / 'calibration.json'
 try:
     HORIZON_Y = json.loads(CAL_FILE.read_text())['horizon_y']
 except (OSError, ValueError, KeyError):
     pass
-PX_NOISE = 1.5                           # assumed std of a blob's reference row (px): drives the uncertainty estimates
+
+# ---- what to look for (HSV, OpenCV: H 0-179), sampled from this camera in this room on 2026-10-21 ------------------
+FLOOR_V = 100                            # the floor is bright (V 160-180); anything darker is an object on it
+DARK_V = 50                              # a black tyre (V 10-30)
+RIM_HSV = ((18, 35, 95), (38, 255, 255))  # the pale-yellow rim of a flat wheel: H 25-33, S 43-130, V 120-155
+TAN_HSV = ((8, 100, 35), (24, 255, 120))  # the cardboard box: H 14-22, S 123-200, V 52-69
+FIRE_MIN_AREA = 1500                     # px: the box is big; a tan speck is not the fire
+WHEEL_WIDTH_M = (0.03, 0.12)             # a blob must be this wide in real life to be a wheel
 BOX_COLOUR = {'fire': (0, 0, 255), 'victim': (0, 255, 255)}
 
 # ---- motion -----------------------------------------------------------------------------------------------------
@@ -100,7 +91,7 @@ POWER_SCALE = min(1.0, 7.5 / (MOTOR_SUPPLY_V - 2.0))
 wb.MAX_POWER = round(255 * POWER_SCALE)  # nothing is ever commanded above this
 # One motor turns slower than the other three. The weak motor gets the full command and the other three are scaled to
 # WEAK_RATIO of it, so all four match at the top. Heading hold on straight legs mops up whatever this misses.
-WEAK_MOTOR = 3                           # TODO(calibrate): shield terminal M1..M4 of the slow motor (robot.yaml: M3)
+WEAK_MOTOR = 3                           # TODO(calibrate): shield terminal M1..M4 of the slow motor
 WEAK_RATIO = 0.85                        # TODO(calibrate): see the 'steering bias' line each straight leg prints
 wb.TRIM = tuple(1.0 if m + 1 == WEAK_MOTOR else WEAK_RATIO for m in range(4))
 # ARC turns: every wheel rolls the way the robot faces, one side slower - nothing is dragged sideways. To turn right
@@ -123,33 +114,33 @@ SETTLE_S = 0.35                          # stop this long before trusting a fram
 CYCLE_S = 0.06                           # control loop period (the Uno's watchdog is 400 ms)
 
 # ---- sonar (servo-mounted HC-SR04) ------------------------------------------------------------------------------
-SONAR_CENTER_DEG = 128                   # servo angle that points STRAIGHT AHEAD, found by hand (higher = left)
+SONAR_CENTER_DEG = 128                   # servo angle that points STRAIGHT AHEAD (found by hand; the firmware's power-on
+#                                          angle, SERVO_CENTER_DEG in wander_fw.ino, is the same number)
+SWEEP_DEG = (-40, -20, 0, 20, 40)        # the look-around at the start: right to left, relative to centre
 OBSTACLE_CM = 22                         # something this close ahead (and closer than the target) = stop
 
 # ---- mission ----------------------------------------------------------------------------------------------------
-SURVEY_VIEWS_DEG = (60, 30, 0, -30, -60, -90)   # turn to +60 once, then scan RIGHT; 30 deg steps overlap (FOV 41)
-FRAMES_PER_VIEW = 3
-MERGE_M = 0.30                           # sightings of one kind closer than this are the same object
-FIRE_MERGE_M = 0.60                      # red blobs this close are one fire (the box and its shadowed side, say)
-MIN_SIGHTINGS = 2                        # an object seen fewer times than this is noise
-CLOSE_CALL_SIGMAS = 2.0                  # fire distances closer than this many std apart get re-measured from nearer
-VANTAGE_FRACTION = 0.5                   # re-measure close calls from this far along the line start -> fire: halfway
-#                                          quarters the depth error, and stays clear of the fire even when its own
-#                                          range is badly over-estimated (a 3 px tilt error = +25% at 2.5 m)
-FIRE_CLEAR_M = 0.40                      # routes keep this far from the fire...
-OBSTACLE_CLEAR_M = 0.25                  # ...from an obstacle the sonar found...
-VICTIM_CLEAR_M = 0.20                    # ...and from the victims that are not the current target
+LOOK_FRAMES = 6                          # photos per look; an object must be in most of them to count
+MERGE_M = 0.20                           # sightings of a victim closer than this (across photos) are the same victim
+FIRE_CLEAR_M = 0.20                      # routes keep this far from the box's base edge...
+VICTIM_CLEAR_M = 0.18                    # ...and from the victims that are not the current target
+OBSTACLE_CLEAR_M = 0.25                  # ...and from an obstacle the sonar found
 MAX_REROUTES = 3
-FIRE_STOP_M = 0.25                       # fire straight ahead and this close while homing: stop
+FIRE_STOP_M = 0.15                       # the fire straight ahead, this close and nearer than the target: stop
 K_STEER = 150                            # motor power per radian of bearing error while homing
 TRACK_GATE_DEG = 12                      # victims look alike: a tracked blob must stay this close to where it was
 ACQUIRE_GATE_DEG = 25                    # ...and this close to the map's prediction when homing starts
 LOST_S = 2.0
-CLOSE_FRAC = 0.95                        # victim's hub this low in the image = about to pass under the camera
-CREEP_M = 0.03                           # then creep this much further, blind: the hub centre is 0.15 m from the lens
-#                                          when it leaves the image, the wheel face ~0.11 m: this leaves a ~5 cm gap
+CLOSE_FRAC = 0.95                        # the tyre's floor contact this low in the image = right in front
+TOUCH_CREEP_M = 0.17                     # then creep this far, blind, to touch: at CLOSE_FRAC the wheel's near edge is
+#                                          ~0.22 m from the lens. TODO(calibrate): raise if it stops short, lower if it
+#                                          pushes the wheel
 HOME_TOL_M = 0.12                        # back at the start when re-localised within this
 MAX_FIX_M = 0.6                          # a fire-based correction bigger than this is a mis-sighting: ignored
+GONE_LOOKS = 2                           # the touched victim must be missing from this many looks in a row...
+REMOVE_TIMEOUT_S = 120                   # ...or, after this long, the robot carries on without it
+SAME_VICTIM_M = 0.25                     # a victim within this of a rescued one's spot IS the rescued one
+MOTOR_ON_COUNTDOWN_S = 15                # after the first decision: time to switch the motor battery on
 
 
 def wrap(a):
@@ -164,7 +155,7 @@ class Dash:
     def __init__(self):
         self.lock = threading.Lock()
         self.log, self.thoughts = [], []
-        self.objs = []                   # [{name, kind, x, y, rank, reached}]
+        self.objs = []                   # [{name, kind, x, y, rank, reached}] (+ ax, ay, bx, by: the fire's base)
         self.hazards = []                # [[x, y, clearance, name]]
         self.path = []                   # the route being driven, [[x, y], ...]
         self.trail = [[0.0, 0.0]]
@@ -220,56 +211,100 @@ STATUS = Status()
 
 
 # ---- perception -------------------------------------------------------------------------------------------------
-def floor_range(kind, ref_row, horizon=HORIZON_Y):
-    """Floor range (m) of an object whose reference point (box base / hub centre) is at image row ref_row; None if
-    that row is at or above the horizon (not on the floor, or too far to tell)."""
-    drop = ref_row - horizon
-    return None if drop < 4 else (CAM_HEIGHT_M - Z_M[kind]) * F_PX / drop
+def floor_range(row, horizon=None):
+    """Floor range (m) of the point where an object meets the floor at image row `row`; None at/above the horizon."""
+    drop = row - (HORIZON_Y if horizon is None else horizon)
+    return None if drop < 4 else CAM_HEIGHT_M * F_PX / drop
 
 
-def range_sigma(kind, r):
-    """1-sigma range error from PX_NOISE pixels of row error: dr = r^2 / ((h - z) f) per pixel."""
-    return r * r * PX_NOISE / ((CAM_HEIGHT_M - Z_M[kind]) * F_PX)
+def bearing_of(col):
+    return math.atan2(W / 2 - col, F_PX)                            # rad, + = left of the camera axis
 
 
 class Blob:
-    """One coloured blob in the upright image, with its bearing and (if it can be measured) its floor range."""
+    """A fire or victim in the upright image. (x, w) span its BASE; `bottom` is the row where it meets the floor."""
 
-    def __init__(self, kind, x, y, w, h):
-        self.kind, self.x, self.y, self.w, self.h = kind, x, y, w, h
-        self.bottom = y + h
-        self.bearing = math.atan2(W / 2 - (x + w / 2), F_PX)       # rad, + = left of the camera axis
-        ref = y + h / 2 if kind == 'victim' else self.bottom
-        clipped = kind == 'fire' and self.bottom >= H - 2           # the box's base is out of the picture
-        self.range = None if clipped else floor_range(kind, ref)
+    def __init__(self, kind, x, y, w, bottom):
+        self.kind, self.x, self.y, self.w, self.bottom = kind, x, y, w, bottom
+        self.h = bottom - y
+        self.bearing = bearing_of(x + w / 2)
+        self.range = floor_range(bottom)
+        self.b_left, self.b_right = bearing_of(x), bearing_of(x + w)  # the base's two ends (the fire is wide)
 
     def label(self):
         r = '?' if self.range is None else f'{self.range:.2f}m'
         return f'{self.kind} {r} {math.degrees(self.bearing):+.0f}'
 
 
-KERNEL = np.ones((5, 5), np.uint8)
+def floor_below(hsv, x, w, bottom):
+    """Is the strip just under columns x..x+w at `bottom` bright, unsaturated floor? (= the object stands there)"""
+    y0, y1 = min(H - 1, bottom + 2), min(H, bottom + 8)
+    strip = hsv[y0:y1, x + w // 4: max(x + w - w // 4, x + w // 4 + 1)]
+    return strip.size > 0 and np.median(strip[..., 2]) > FLOOR_V + 10 and np.median(strip[..., 1]) < 90
+
+
+def wheels_from_rims(hsv):
+    """Flat wheels: a thin pale-yellow rim directly on top of a near-black tyre band that ends on bright floor."""
+    out = []
+    rim = cv2.inRange(hsv, *RIM_HSV)
+    for c in cv2.findContours(rim, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        x, y, w, h = cv2.boundingRect(c)
+        if w < 8 or h > 10 or w < 2.5 * h:
+            continue
+        cols = slice(x + w // 6, x + w - w // 6)
+        yy, dark = y + h, 0
+        while yy < H and yy - (y + h) <= 60 and np.median(hsv[yy, cols, 2]) < FLOOR_V:   # walk down the tyre
+            dark += np.median(hsv[yy, cols, 2]) < DARK_V
+            yy += 1
+        r = floor_range(yy) if yy < H and yy - (y + h) <= 60 else None
+        if 3 <= dark <= 50 and r and WHEEL_WIDTH_M[0] <= w * r / F_PX <= WHEEL_WIDTH_M[1]:
+            out.append(Blob('victim', x, y, w, yy))
+    return out
+
+
+def wheels_from_pucks(hsv):
+    """Fallback for a wheel whose rim is not lit: a small dark wide puck whose base meets the floor."""
+    out = []
+    m = cv2.morphologyEx(cv2.inRange(hsv, (0, 0, 0), (180, 255, DARK_V - 5)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    for c in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        x, y, w, h = cv2.boundingRect(c)
+        r = floor_range(y + h)
+        if cv2.contourArea(c) < 40 or r is None or not floor_below(hsv, x, w, y + h):
+            continue
+        if WHEEL_WIDTH_M[0] <= w * r / F_PX <= WHEEL_WIDTH_M[1] and 0.01 <= h * r / F_PX <= 0.06 and 1.2 <= w / h <= 6:
+            out.append(Blob('victim', x, y, w, y + h))
+    return out
+
+
+def find_fire(hsv):
+    """The largest tan blob standing on the floor; its (x, w) are the BASE's ends (the bottom 12 rows)."""
+    m = cv2.inRange(hsv, *TAN_HSV)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    best = None
+    for c in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        x, y, w, h = cv2.boundingRect(c)
+        area = cv2.contourArea(c)
+        if area < FIRE_MIN_AREA or floor_range(y + h) is None or not floor_below(hsv, x, w, y + h):
+            continue
+        base = c[c[:, 0, 1] >= y + h - 12][:, 0, 0]
+        if best is None or area > best[0]:
+            best = (area, Blob('fire', int(base.min()), y, int(base.max() - base.min()) + 1, y + h))
+    return [best[1]] if best else []
 
 
 def detect(bgr):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    blobs = []
-    for kind, ranges in COLOURS.items():
-        mask = np.zeros(hsv.shape[:2], np.uint8)
-        for lo, hi in ranges:
-            mask |= cv2.inRange(hsv, lo, hi)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, KERNEL)
-        for c in cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
-            x, y, w, h = cv2.boundingRect(c)
-            lo, hi = ROUND.get(kind, (0, 99))
-            if cv2.contourArea(c) >= MIN_AREA[kind] and lo <= w / h <= hi:
-                blobs.append(Blob(kind, x, y, w, h))
-    return blobs
+    wheels = wheels_from_rims(hsv)
+    for p in wheels_from_pucks(hsv):                                # fallback pucks not already found by their rim
+        if all(p.x + p.w < q.x or q.x + q.w < p.x for q in wheels):
+            wheels.append(p)
+    return find_fire(hsv) + wheels
 
 
 def rotation(prev, cur):
     """(rad, confidence): how far the camera turned between two grey bands (+ = left: the scene slides right when
-    the camera turns left). Confidence ~0.8 for an unmoved scene, lower the more it changed."""
+    the camera turns left)."""
     (dx, _), conf = cv2.phaseCorrelate(prev, cur)
     return math.atan2(dx, F_PX), conf
 
@@ -319,7 +354,7 @@ class Camera:
                 cv2.rectangle(frame, (b.x, b.y), (b.x + b.w, b.bottom), BOX_COLOUR[b.kind], 2)
                 cv2.putText(frame, b.label(), (b.x, max(12, b.y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                             BOX_COLOUR[b.kind], 1, cv2.LINE_AA)
-            cv2.line(frame, (0, HORIZON_Y), (W, HORIZON_Y), (90, 90, 90), 1)
+            cv2.line(frame, (0, int(HORIZON_Y)), (W, int(HORIZON_Y)), (90, 90, 90), 1)
             ok, jpg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
             with self.cond:
                 self.t, self.blobs = t, blobs
@@ -375,104 +410,10 @@ class Camera:
         return Handler
 
 
-# ---- mapping and deciding (pure: --selftest and --robustness exercise these) ------------------------------------
-Sighting = collections.namedtuple('Sighting', 'kind x y r frame view area ox oy')   # (ox, oy): seen from here
-
-
-def sightings_from(blobs, x, y, th, frame, view):
-    """Blobs seen from pose (x, y, th) -> floor-plane Sightings in the map frame (blobs without a range are dropped)."""
-    out = []
-    for b in blobs:
-        if b.range is not None:
-            a = th + b.bearing
-            out.append(Sighting(b.kind, x + b.range * math.cos(a), y + b.range * math.sin(a), b.range, frame, view,
-                                b.w * b.h, x, y))
-    return out
-
-
-def same_object(s, m, merge):
-    """Could sightings s and m be the same object? Seen from (about) the same spot, compare BEARING, which is precise
-    (~0.1 deg/px), and RANGE within its expected error (which grows with range^2 - a fixed radius splits one far wheel
-    into two); seen from different spots, compare floor positions."""
-    if math.hypot(s.ox - m.ox, s.oy - m.oy) < 0.25:
-        da = abs(wrap(math.atan2(s.y - s.oy, s.x - s.ox) - math.atan2(m.y - m.oy, m.x - m.ox)))
-        sig = max(range_sigma(s.kind, s.r), range_sigma(s.kind, m.r))
-        wide = math.radians(10 if s.kind == 'fire' else 4)          # the box is wide: its blob centre wanders
-        return da < wide and abs(s.r - m.r) < max(merge, 3 * sig)
-    return math.hypot(s.x - m.x, s.y - m.y) < merge
-
-
-def cluster(sightings, kind, merge):
-    """Group one kind's sightings into objects: [{'x', 'y', 'members'}], each at the MEDIAN of its members (one bad
-    sighting cannot drag it)."""
-    objs = []
-    for s in (s for s in sightings if s.kind == kind):
-        # two blobs in ONE photo are two objects, however close: that keeps neighbours apart while the range
-        # tolerance stays wide enough not to split one far wheel in two
-        hits = [o for o in objs if all(m.frame != s.frame for m in o['members'])
-                and any(same_object(s, m, merge) for m in o['members'])]
-        if hits:
-            o = max(hits, key=lambda o: len(o['members']))
-            o['members'].append(s)
-            o['x'] = statistics.median(m.x for m in o['members'])
-            o['y'] = statistics.median(m.y for m in o['members'])
-        else:
-            objs.append({'x': s.x, 'y': s.y, 'members': [s]})
-    return objs
-
-
-def build_map(sightings):
-    """-> (fire or None, [victims]). The fire is the red cluster with the most evidence (sightings x pixel area): the
-    box, not a red speck. Victims need MIN_SIGHTINGS. Each object: {'x', 'y', 'members'}."""
-    fires = cluster(sightings, 'fire', FIRE_MERGE_M)
-    fire = max(fires, key=lambda f: sum(m.area for m in f['members']), default=None)
-    victims = [v for v in cluster(sightings, 'victim', MERGE_M) if len(v['members']) >= MIN_SIGHTINGS]
-    return fire, victims
-
-
-def fire_distance(victim, fire):
-    """(distance, sigma, how) from victim to fire. Preferred: measured between the two IN THE SAME FRAME (the robot's
-    pose error is common to both and cancels), median over frames; sigma from the range noise model, shrunk by the
-    number of independent views. Fallback: between the two map positions."""
-    pairs, sig2, views = [], [], set()
-    by_frame = collections.defaultdict(list)
-    for f in fire['members']:
-        by_frame[f.frame].append(f)
-    for v in victim['members']:
-        if by_frame[v.frame]:
-            f = max(by_frame[v.frame], key=lambda f: f.area)
-            pairs.append(math.hypot(v.x - f.x, v.y - f.y))
-            sig2.append(range_sigma('victim', v.r) ** 2 + range_sigma('fire', f.r) ** 2)
-            views.add(v.view)
-    if pairs:
-        return statistics.median(pairs), math.sqrt(statistics.median(sig2) / len(views)), 'same-photo'
-    v_r = statistics.median(m.r for m in victim['members'])
-    f_r = statistics.median(m.r for m in fire['members'])
-    nv = len({m.view for m in victim['members']})
-    sigma = math.sqrt(range_sigma('victim', v_r) ** 2 / nv + range_sigma('fire', f_r) ** 2)
-    return math.hypot(victim['x'] - fire['x'], victim['y'] - fire['y']), sigma, 'map'
-
-
-def rank(victims, fire):
-    """Victims sorted closest-to-fire first, each annotated with 'd', 'sigma', 'how'; plus the list of adjacent pairs
-    (i, i+1) whose difference is within CLOSE_CALL_SIGMAS of their combined uncertainty."""
-    for v in victims:
-        v['d'], v['sigma'], v['how'] = fire_distance(v, fire) if fire else (math.hypot(v['x'], v['y']), 0.0, 'robot')
-    order = sorted(victims, key=lambda v: v['d'])
-    close = [i for i in range(len(order) - 1)
-             if order[i + 1]['d'] - order[i]['d'] < CLOSE_CALL_SIGMAS * math.hypot(order[i]['sigma'],
-                                                                                   order[i + 1]['sigma'])]
-    return order, close
-
-
-def unlikeness(b1, r1, b2, r2):
-    """How implausible it is that (bearing b1, range r1) and (b2, r2) - both seen from one spot - are the same wheel,
-    in squared standard deviations: bearing is good to a few degrees (heading drift), range to its range^2 error.
-    Bearing alone confuses two wheels that line up; range alone confuses two at the same distance."""
-    r_err = max(0.08, 2 * range_sigma('victim', max(r1 or 0, r2 or 0)))
-    db = wrap(b1 - b2) / math.radians(3)
-    dr = 0 if r1 is None or r2 is None else (r1 - r2) / r_err
-    return db * db + dr * dr
+# ---- the scene: map and decision (pure: --selftest exercises these) ---------------------------------------------
+def to_map(pose, r, bearing):
+    x, y, th = pose
+    return x + r * math.cos(th + bearing), y + r * math.sin(th + bearing)
 
 
 def closest_on_segment(a, b, p):
@@ -484,6 +425,73 @@ def closest_on_segment(a, b, p):
 def seg_dist(a, b, p):
     q = closest_on_segment(a, b, p)
     return math.hypot(q[0] - p[0], q[1] - p[1])
+
+
+def build_scene(frames, pose):
+    """Several photos' blobs, all taken from `pose` -> (fire, victims) in the map frame.
+    fire = {'a', 'b' (its base's two ends), 'x', 'y' (the base's middle), 'r', 'bearing'} or None.
+    victims = [{'x', 'y', 'r', 'bearing', 'd' (to the fire's base edge, same-photo median), 'n'}], each seen in most
+    photos (a one-off speck is noise). Victims are told apart by bearing: two blobs in one photo are two victims."""
+    majority = len(frames) // 2 + 1
+    fire_obs, victim_obs = [], []                                   # victim_obs: (frame, Blob, map point)
+    for i, blobs in enumerate(frames):
+        for b in blobs:
+            if b.kind == 'fire' and b.range is not None:
+                fire_obs.append((i, b))
+            elif b.kind == 'victim' and b.range is not None:
+                victim_obs.append((i, b, to_map(pose, b.range, b.bearing)))
+    fire = None
+    if len(fire_obs) >= majority:
+        ends = [(to_map(pose, b.range, b.b_left), to_map(pose, b.range, b.b_right)) for _, b in fire_obs]
+        a = (statistics.median(e[0][0] for e in ends), statistics.median(e[0][1] for e in ends))
+        bb = (statistics.median(e[1][0] for e in ends), statistics.median(e[1][1] for e in ends))
+        fire = {'a': a, 'b': bb, 'x': (a[0] + bb[0]) / 2, 'y': (a[1] + bb[1]) / 2,
+                'r': statistics.median(b.range for _, b in fire_obs),
+                'bearing': statistics.median(b.bearing for _, b in fire_obs)}
+    fire_by_frame = {i: b for i, b in fire_obs}
+    groups = []                                                     # [[(frame, blob, point), ...]]
+    for o in sorted(victim_obs, key=lambda o: o[1].bearing):
+        g = next((g for g in groups if all(m[0] != o[0] for m in g)
+                  and abs(g[-1][1].bearing - o[1].bearing) < math.radians(3)
+                  and math.hypot(g[-1][2][0] - o[2][0], g[-1][2][1] - o[2][1]) < MERGE_M), None)
+        if g:
+            g.append(o)
+        else:
+            groups.append([o])
+    victims = []
+    for g in groups:
+        if len(g) < majority:
+            continue
+        v = {'x': statistics.median(m[2][0] for m in g), 'y': statistics.median(m[2][1] for m in g),
+             'r': statistics.median(m[1].range for m in g), 'bearing': statistics.median(m[1].bearing for m in g),
+             'n': len(g), 'd': None}
+        same = []
+        for i, b, p in g:                                           # distance to the fire's base IN THE SAME PHOTO
+            f = fire_by_frame.get(i)
+            if f is not None:
+                same.append(seg_dist(to_map(pose, f.range, f.b_left), to_map(pose, f.range, f.b_right), p))
+        if same:
+            v['d'] = statistics.median(same)
+        elif fire:
+            v['d'] = seg_dist(fire['a'], fire['b'], (v['x'], v['y']))
+        victims.append(v)
+    return fire, victims
+
+
+def choose(victims, fire, pose):
+    """The victim closest to the fire (no fire seen: the one closest to the robot)."""
+    if not victims:
+        return None
+    if fire is None:
+        return min(victims, key=lambda v: math.hypot(v['x'] - pose[0], v['y'] - pose[1]))
+    return min(victims, key=lambda v: v['d'])
+
+
+def fire_hazards(fire):
+    """The box as hazards for the route planner: its base's two ends and its middle."""
+    if fire is None:
+        return []
+    return [(p[0], p[1], FIRE_CLEAR_M, 'the fire') for p in (fire['a'], (fire['x'], fire['y']), fire['b'])]
 
 
 def plan(start, goal, hazards):
@@ -513,8 +521,8 @@ def plan(start, goal, hazards):
 
 
 def reach_distance():
-    """How far ahead a hub's centre is when it reaches CLOSE_FRAC of the image."""
-    return floor_range('victim', H * CLOSE_FRAC)
+    """How far ahead a wheel's near edge is when its floor contact reaches CLOSE_FRAC of the image."""
+    return floor_range(H * CLOSE_FRAC)
 
 
 # ---- acting -----------------------------------------------------------------------------------------------------
@@ -545,6 +553,10 @@ class Nav:
     def th(self):
         return wrap(self.cam.yaw - self.yaw0)
 
+    @property
+    def pose(self):
+        return self.x, self.y, self.th
+
     def set_heading(self, th):
         self.yaw0 = self.cam.yaw - th
 
@@ -557,10 +569,7 @@ class Nav:
     def look(self, frames=1):
         """Stop, settle, and return the blobs of `frames` fresh frames (a list of lists)."""
         self.pause()
-        out = []
-        for _ in range(frames):
-            out.append(self.cam.snap(time.time()))
-        return out
+        return [self.cam.snap(time.time()) for _ in range(frames)]
 
     def _advance(self, dist):
         self.x += dist * math.cos(self.th)
@@ -597,7 +606,7 @@ class Nav:
             if abs(wrap(self.th - th0)) < math.radians(STALL_DEG):
                 stalls += 1
                 if stalls >= MAX_STALLS:
-                    DASH.say('The arcs are not turning the robot - stopping (battery? stuck?)')
+                    DASH.say('The arcs are not turning the robot - stopping (motor switch off? battery? stuck?)')
                     self.dead = True
                     return False
                 DASH.say('That arc did not turn the robot - trying again')
@@ -627,14 +636,14 @@ class Nav:
                              wb.drive_powers(-(CRUISE + steer), -(CRUISE - steer)))
             steer_sum, n = steer_sum + steer, n + 1
             STATUS.state = f'driving {"back " if backward else ""}to {label}'
-            fire_ahead = [b for b in self.cam.blobs if b.kind == 'fire' and b.range is not None
-                          and b.range < FIRE_STOP_M and abs(b.bearing) < math.radians(20)]
-            if fire_ahead and not backward:
-                self.pause(0.2)
-                self.moved()
-                DASH.say(f'FIRE {fire_ahead[0].range:.2f} m straight ahead - stopped the leg')
-                return False
             if not backward:
+                fire_ahead = [b for b in self.cam.blobs if b.kind == 'fire' and b.range is not None
+                              and b.range < FIRE_STOP_M and abs(b.bearing) < math.radians(20)]
+                if fire_ahead:
+                    self.pause(0.2)
+                    self.moved()
+                    DASH.say(f'FIRE {fire_ahead[0].range:.2f} m straight ahead - stopped the leg')
+                    return False
                 cm = self.robot.ping()
                 if cm is not None and cm < OBSTACLE_CM:
                     r = cm / 100 + 0.08                             # the sonar sits ~8 cm behind the robot's nose
@@ -669,35 +678,34 @@ class Nav:
         return self.leg(d, bearing, label=label)
 
 
-def survey(nav, views_deg=SURVEY_VIEWS_DEG, frame0=0):
-    """Look from each heading in views_deg (map frame), FRAMES_PER_VIEW frames each; return the Sightings."""
-    seen, frame = [], frame0
-    for i, deg in enumerate(views_deg):
-        if not nav.turn_to(math.radians(deg), f'survey: turning to {deg:+.0f} deg') and nav.dead:
-            DASH.think('I cannot turn, so I can only map what I have already seen.')
-            break
-        found = []
-        for blobs in nav.look(FRAMES_PER_VIEW):
-            frame += 1
-            got = sightings_from(blobs, nav.x, nav.y, nav.th, frame, (frame0, i))
-            seen += got
-            found = got
-        kinds = ', '.join(f'{s.kind} {s.r:.1f} m' for s in found) or 'nothing'
-        DASH.say(f'Looking at {math.degrees(nav.th):+.0f} deg: {kinds}')
-    return seen
+def sonar_sweep(robot):
+    """Centre the servo, look right-to-left with the sonar, centre again. The wheels do not move."""
+    readings, echoes = [], 0
+    for rel in SWEEP_DEG:
+        cm = robot.look(SONAR_CENTER_DEG + rel)
+        echoes += cm is not None and cm < 400
+        readings.append(f'{"right" if rel < 0 else "left" if rel > 0 else "ahead"} {abs(rel)}: '
+                        + ('-' if cm is None else 'no echo' if cm >= 400 else f'{cm} cm'))
+    robot.look(SONAR_CENTER_DEG)
+    DASH.say('Sonar look-around: ' + ', '.join(readings) + ' - centred again')
+    if not echoes:
+        DASH.think('The sonar heard nothing at any angle. It seems to be powered from the MOTOR battery, so with the '
+                   'motor switch off it is deaf - I rely on the camera until the motors are on.')
+
+
+def look_at_scene(nav, frames=LOOK_FRAMES):
+    return build_scene(nav.look(frames), nav.pose)
 
 
 def relocalise(nav, fire):
-    """At (about) the start: face the fire and measure it over several frames. Its BEARING fixes the heading (yaw
-    drifts a little) and its RANGE + bearing fix the position. A correction too big to be drift is ignored."""
+    """Back at (about) the start: face the fire, measure its base over several photos. Its BEARING fixes the heading
+    and its RANGE + bearing fix the position. A correction too big to be drift is ignored."""
     nav.turn_to(math.atan2(fire['y'] - nav.y, fire['x'] - nav.x), 'turning to the fire to re-localise')
     obs = []
     for blobs in nav.look(5):
-        near = [b for b in blobs if b.kind == 'fire' and b.range is not None
-                and abs(b.bearing) < math.radians(ACQUIRE_GATE_DEG)]
+        near = [b for b in blobs if b.kind == 'fire' and b.range is not None]
         if near:
-            b = max(near, key=lambda b: b.w * b.h)
-            obs.append((b.range, b.bearing))
+            obs.append((near[0].range, near[0].bearing))
     if len(obs) < 3:
         DASH.think('I cannot see the fire clearly from here, so I trust my dead reckoning.')
         return False
@@ -711,8 +719,8 @@ def relocalise(nav, fire):
     if shift > MAX_FIX_M:
         DASH.think(f'The fire says I am {shift:.2f} m from where I think - too much to be drift, ignoring it.')
         return False
-    DASH.think(f'Fire seen {r:.2f} m away, {abs(math.degrees(b)):.0f} deg {"left" if b > 0 else "right"}: I am '
-               f'{shift:.2f} m and {abs(math.degrees(wrap(th - nav.th))):.0f} deg off my estimate - corrected.')
+    DASH.think(f'Fire seen {r:.2f} m away: I am {shift * 100:.0f} cm and {abs(math.degrees(wrap(th - nav.th))):.0f} '
+               f'deg off my estimate - corrected.')
     nav.x, nav.y = x, y
     nav.set_heading(th)
     nav.moved()
@@ -720,14 +728,13 @@ def relocalise(nav, fire):
 
 
 def home_on(nav, name, bearing, rng):
-    """Visual servo onto the victim the map predicts at (bearing, rng) from here: the first lock goes to the blob that
-    best fits BOTH (victims look alike), then it is tracked by bearing until its hub nears the bottom of the image;
-    then creep CREEP_M blind. True when there; False if it is lost or the fire/an obstacle is in the way."""
+    """Visual servo onto the victim the map predicts at (bearing, rng) from here: lock on the blob that best fits the
+    prediction, track it by bearing until its floor contact nears the bottom of the image, then creep TOUCH_CREEP_M
+    blind to touch it. True when touched; False if it is lost or the fire/an obstacle is in the way."""
     robot, cam = nav.robot, nav.cam
     robot.aim(SONAR_CENTER_DEG)
     nav.obstacle = None
-    track, gate, last_seen, last = bearing, math.radians(ACQUIRE_GATE_DEG), time.time(), time.time()
-    locked = False
+    track, gate, last_seen, last, locked = bearing, math.radians(ACQUIRE_GATE_DEG), time.time(), time.time(), False
     while not STOP_EVENT.is_set():
         blobs = cam.snap(time.time() - 0.05, timeout=0.3)
         now = time.time()
@@ -740,24 +747,24 @@ def home_on(nav, name, bearing, rng):
                 return False
             continue
         b = (min(mine, key=lambda b: abs(b.bearing - track)) if locked else
-             min(mine, key=lambda b: unlikeness(b.bearing, b.range, bearing, rng)))
+             min(mine, key=lambda b: (math.degrees(b.bearing - bearing) / 3) ** 2 + ((b.range - rng) / 0.15) ** 2))
         locked = True
         track, gate, last_seen = b.bearing, math.radians(TRACK_GATE_DEG), now
-        if b.y + b.h / 2 >= H * CLOSE_FRAC:
-            DASH.say(f'Victim {name} is right in front - creeping the last {CREEP_M * 100:.0f} cm')
-            t_end = time.time() + CREEP_M / CRUISE_MPS
+        if b.bottom >= H * CLOSE_FRAC:
+            DASH.say(f'Victim {name} is right in front - creeping {TOUCH_CREEP_M * 100:.0f} cm to touch it')
+            t_end = time.time() + TOUCH_CREEP_M / CRUISE_MPS
             while time.time() < t_end and not STOP_EVENT.is_set():
                 robot.drive(wb.drive_powers(CRUISE, CRUISE))
                 time.sleep(CYCLE_S)
-            nav._advance(CREEP_M)
-            nav.pause(0.3, f'at victim {name}')
+            nav._advance(TOUCH_CREEP_M)
+            nav.pause(0.5, f'touching victim {name}')
             nav.moved()
             return True
         for f in blobs:
             if f.kind == 'fire' and f.range is not None and abs(f.bearing) < math.radians(20) \
-                    and f.range < FIRE_STOP_M and f.range < b.range:
+                    and f.range < FIRE_STOP_M and f.range < b.range - 0.05:
                 nav.pause(0.3, 'FIRE AHEAD - stopping')
-                DASH.say(f'FIRE {f.range:.2f} m straight ahead - stopped')
+                DASH.say(f'FIRE {f.range:.2f} m straight ahead, nearer than the victim - stopped')
                 return False
         cm = robot.ping()
         if cm is not None and cm < OBSTACLE_CM and cm / 100 < b.range - 0.10:
@@ -790,8 +797,8 @@ def explain_route(start, goal, path, hazards, label):
     elif near:
         d, h = min(near, key=lambda n: n[0])
         if d < h[2]:
-            DASH.think(f'{label[0].upper() + label[1:]} is only {math.hypot(goal[0] - h[0], goal[1] - h[1]):.2f} m from '
-                       f'{h[3]}, so I must pass within {d:.2f} m of it - approaching slowly, watching with the camera.')
+            DASH.think(f'{label[0].upper() + label[1:]} is right next to {h[3]}, so I go straight in, slowly, '
+                       f'watching it with the camera.')
         else:
             DASH.think(f'The straight line to {label} stays {d:.2f} m from {h[3]} - safe, going direct.')
 
@@ -821,8 +828,8 @@ def go_out(nav, goal, hazards, label):
 
 
 def come_back(nav, passed, fire):
-    """Reverse back through the waypoints passed on the way out, to the start, without turning round; then re-anchor
-    on the fire and fix what is left."""
+    """Reverse back through the waypoints passed on the way out to the start, without turning round; then re-anchor on
+    the fire, fix what is left, and face the arena again."""
     DASH.set(path=[[nav.x, nav.y]] + [list(p) for p in reversed(passed)] + [[0.0, 0.0]])
     for p in list(reversed(passed)) + [(0.0, 0.0)]:
         if not nav.go_to(p, 'the start point', reverse_ok=True) and nav.dead:
@@ -832,190 +839,142 @@ def come_back(nav, passed, fire):
             break
         err = math.hypot(nav.x, nav.y)
         if err <= HOME_TOL_M:
-            DASH.think(f'Back at the start point (within {err * 100:.0f} cm).')
+            DASH.think(f'Back in the home region (within {err * 100:.0f} cm of the start).')
             break
         DASH.think(f'I am {err * 100:.0f} cm from the start point - correcting.')
         nav.go_to((0.0, 0.0), 'the start point', reverse_ok=True)
     nav.turn_to(0.0, 'facing the arena again')
+    DASH.set(path=[])
 
 
-def vantage_point(fire):
-    """Where close calls are re-measured from: VANTAGE_FRACTION of the way from the start to the fire; None if the
-    fire is already close (the start is as good a viewpoint as any)."""
-    if math.hypot(fire['x'], fire['y']) < 1.2:
-        return None
-    return fire['x'] * VANTAGE_FRACTION, fire['y'] * VANTAGE_FRACTION
+def wait_until_removed(nav, spot, name):
+    """Stay put until the touched victim is gone from its spot (GONE_LOOKS looks in a row), or REMOVE_TIMEOUT_S."""
+    DASH.say(f'Please pick up victim {name} (I touched it). I will wait here.')
+    gone, t_end = 0, time.time() + REMOVE_TIMEOUT_S
+    while not STOP_EVENT.is_set() and time.time() < t_end:
+        _, victims = look_at_scene(nav, 3)
+        still = any(math.hypot(v['x'] - spot[0], v['y'] - spot[1]) < SAME_VICTIM_M for v in victims)
+        gone = 0 if still else gone + 1
+        STATUS.state = f'waiting for victim {name} to be picked up ({int(t_end - time.time())} s)'
+        if gone >= GONE_LOOKS:
+            DASH.say(f'Victim {name} has been picked up - SAVED.')
+            return
+        STOP_EVENT.wait(1.5)
+    DASH.say(f'Victim {name} was not picked up in {REMOVE_TIMEOUT_S} s - I will ignore that spot from now on.')
 
 
-def recheck_views(pos, fire, who):
-    """Headings (deg) to look along from pos: for each contested victim, between it and the fire if both fit in one
-    frame (so the distance is a same-photo one), else at the victim."""
-    views = []
-    for v in who:
-        a_v = math.atan2(v['y'] - pos[1], v['x'] - pos[0])
-        a_f = math.atan2(fire['y'] - pos[1], fire['x'] - pos[0])
-        gap = wrap(a_f - a_v)
-        views.append(math.degrees(a_v + gap / 2) if abs(gap) < math.radians(HFOV_DEG - 12) else math.degrees(a_v))
-    return views
-
-
-def remeasure(who, fire, new):
-    """Update each contested victim from the sightings `new` taken nearer the fire: its fire distance and its map
-    position (both now more precise). New sightings are matched to a victim by BEARING FROM THE START, which the first
-    survey measured precisely and its range within its (larger) error - see unlikeness(). Returns
-    [(victim, old_d)]."""
-    fire2, _ = build_map(new + list(fire['members']))
-    near = cluster(new, 'victim', MERGE_M)
-    pairs = sorted((unlikeness(math.atan2(c['y'], c['x']), math.hypot(c['x'], c['y']),
-                               math.atan2(v['y'], v['x']), math.hypot(v['x'], v['y'])), i, j)
-                   for i, v in enumerate(who) for j, c in enumerate(near))
-    used_v, used_c, done = set(), set(), []
-    for u, i, j in pairs:                                           # one-to-one, most plausible match first
-        if u > 9 or i in used_v or j in used_c or fire2 is None:    # 9 = 3 standard deviations
-            continue
-        v, c = who[i], near[j]
-        old = v['d']
-        v['d'], v['sigma'], v['how'] = fire_distance(c, fire2)
-        v['x'], v['y'] = c['x'], c['y']
-        used_v.add(i)
-        used_c.add(j)
-        done.append((v, old))
-    return done
-
-
-def recheck_close_calls(nav, fire, order, close, names, frame0):
-    """Victims whose fire distances are too close to call get measured again from nearer the fire, where a pixel is
-    worth far less (range error ~ range^2). Returns the re-ranked order."""
-    contested = {id(order[i]) for i in close} | {id(order[i + 1]) for i in close}
-    who = [v for v in order if id(v) in contested]
-    vantage = vantage_point(fire)
-    if vantage is None:
-        DASH.think('I am already close to the fire - no nearer viewpoint to re-measure from.')
-        return order
-    DASH.think('Victims ' + ', '.join(names[id(v)] for v in who) + ' are too close to call from here (their fire '
-               f'distances differ by less than my measurement error). I will look again from halfway to the fire, '
-               f'({vantage[0]:+.2f}, {vantage[1]:+.2f}): at half the range a pixel of error costs a quarter of the '
-               f'depth.')
-    hazards = [(fire['x'], fire['y'], FIRE_CLEAR_M)] + [(v['x'], v['y'], VICTIM_CLEAR_M) for v in order]
-    passed = []
-    for p in plan((nav.x, nav.y), vantage, hazards):
-        if not nav.go_to(p, 'the viewpoint'):
-            break
-        passed.append((nav.x, nav.y))
-    new = survey(nav, recheck_views((nav.x, nav.y), fire, who), frame0)
-    for v, old in remeasure(who, fire, new):
-        DASH.think(f'Victim {names[id(v)]}: re-measured {v["d"]:.2f} m from the fire (+-{v["sigma"]:.2f}), '
-                   f'was {old:.2f} m.')
-    come_back(nav, passed, fire)
-    return sorted(order, key=lambda v: v['d'])
+def publish_scene(fire, victims, names, order, saved):
+    objs = []
+    if fire:
+        objs.append({'name': 'FIRE', 'kind': 'fire', 'x': fire['x'], 'y': fire['y'], 'rank': None, 'reached': False,
+                     'ax': fire['a'][0], 'ay': fire['a'][1], 'bx': fire['b'][0], 'by': fire['b'][1]})
+    for v in victims:
+        objs.append({'name': names[id(v)], 'kind': 'victim', 'x': v['x'], 'y': v['y'],
+                     'rank': order.index(v) + 1, 'reached': False})
+    for i, (sx, sy, sname) in enumerate(saved):
+        objs.append({'name': sname, 'kind': 'victim', 'x': sx, 'y': sy, 'rank': None, 'reached': True})
+    DASH.set(objs=objs, hazards=[list(h) for h in fire_hazards(fire)])
 
 
 def mission(nav, drive=True):
-    DASH.say('Surveying the arena from the start point')
-    DASH.think(f'How I judge depth: my camera sits {CAM_HEIGHT_M * 100:.0f} cm above a flat floor, so the further '
-               f'below the horizon something touches the floor, the closer it is. I place every sighting on the floor '
-               f'that way and measure each victim-to-fire distance inside the same photo, so my own position errors '
-               f'cancel.')
-    sightings = survey(nav)
-    if drive and nav.dead:
-        DASH.say('The motors cannot turn the robot - not driving. Check the shield battery and its switch.')
-        drive = False
-    fire, victims = build_map(sightings)
-    victims.sort(key=lambda v: -math.atan2(v['y'], v['x']))         # names A, B, C... from left to right
-    names = {id(v): chr(ord('A') + i) for i, v in enumerate(victims)}
-    if not victims:
-        DASH.think('No victims in sight - nothing to rescue.')
-        return
-    if fire is None:
-        DASH.think('I cannot see the fire, so I cannot rank by danger - I will go nearest first.')
-    order, close = rank(victims, fire)
-
-    def publish():
-        objs = [{'name': names[id(v)], 'kind': 'victim', 'x': v['x'], 'y': v['y'], 'rank': order.index(v) + 1,
-                 'reached': v.get('reached', False)} for v in victims]
+    DASH.say('Staying where I am. Centring the sonar, then looking left and right.')
+    sonar_sweep(nav.robot)
+    saved = []                                                      # [(x, y, name)]: touched and returned from
+    letters = iter('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+    motors_ok = False
+    while not STOP_EVENT.is_set():
+        DASH.say('Looking at the arena')
+        fire, victims = look_at_scene(nav)
+        victims = [v for v in victims if all(math.hypot(v['x'] - s[0], v['y'] - s[1]) >= SAME_VICTIM_M
+                                             for s in saved)]
+        victims.sort(key=lambda v: -v['bearing'])                   # names left to right, this round
+        names = {id(v): next(letters) for v in victims}
+        if fire is None:
+            DASH.think('I cannot see the fire. Without it I cannot judge danger, so I will take the nearest victim.')
+        order = sorted(victims, key=lambda v: v['d'] if fire else v['r'])
+        publish_scene(fire, victims, names, order, saved)
+        if not victims:
+            DASH.say(f'MISSION COMPLETE: no victims left in view. {len(saved)} saved.')
+            DASH.think(f'Everyone I could see has been saved ({len(saved)}), closest to the fire first.')
+            DASH.set(target=None, path=[])
+            return
         if fire:
-            objs.insert(0, {'name': 'FIRE', 'kind': 'fire', 'x': fire['x'], 'y': fire['y'], 'rank': None,
-                            'reached': False})
-        DASH.set(objs=objs)
-
-    publish()
-    if fire:
-        DASH.set(hazards=[[fire['x'], fire['y'], FIRE_CLEAR_M, 'the fire']])
-        DASH.think(f'Survey done: the fire is {math.hypot(fire["x"], fire["y"]):.2f} m away and I see '
-                   f'{len(victims)} victim{"s" * (len(victims) != 1)}.')
-        for v in order:
-            DASH.think(f'Victim {names[id(v)]}: {v["d"]:.2f} m from the fire (+-{v["sigma"]:.2f} m, measured '
-                       f'{"in the same photo as the fire" if v["how"] == "same-photo" else "from my map"}).')
-        if close and drive:
-            order = recheck_close_calls(nav, fire, order, close, names, frame0=10_000)
-            publish()
-        elif close:
-            DASH.think('Some fire distances are within my measurement error - the full mission re-measures them.')
-        DASH.think('Rescue order, closest to the fire first: ' + ' -> '.join(
-            f'{names[id(v)]} ({v["d"]:.2f} m)' for v in order) + f'. {names[id(order[0])]} is in the most danger.')
-    if not drive:
-        return
-    reached = 0
-    for i, v in enumerate(order, 1):
-        if STOP_EVENT.is_set():
+            DASH.think(f'Fire (the box) {fire["r"]:.2f} m ahead, {abs(math.degrees(fire["bearing"])):.0f} deg '
+                       f'{"left" if fire["bearing"] > 0 else "right"}. I see {len(victims)} '
+                       f'victim{"s" * (len(victims) != 1)}:')
+            for v in order:
+                DASH.think(f'  victim {names[id(v)]}: {v["d"]:.2f} m from the fire, {v["r"]:.2f} m from me')
+        target = choose(victims, fire, nav.pose)
+        name = names[id(target)]
+        if fire and len(order) > 1:
+            gap = order[1]['d'] - target['d']
+            DASH.think(f'Victim {name} is closest to the fire, so it is in the most danger: I save it first'
+                       + (f' ({gap * 100:.0f} cm nearer the fire than the next one).' if gap < 0.10 else '.')
+                       + ' Next would be ' + ', then '.join(names[id(v)] for v in order[1:]) + '.')
+        else:
+            DASH.think(f'Victim {name} is the one to save now.')
+        if not drive:
+            DASH.set(state='plan only - nothing moves (run without --plan to do it)')
             return
-        if nav.dead:
-            DASH.say('STOPPED: the motors cannot turn the robot any more.')
-            return
-        name = names[id(v)]
+        if not motors_ok:
+            for n in range(MOTOR_ON_COUNTDOWN_S, 0, -1):
+                DASH.set(state=f'READY: switch the MOTOR battery ON now - moving in {n} s')
+                print(f'Switch the motor battery ON now - moving in {n} s', flush=True)
+                if STOP_EVENT.wait(1):
+                    return
+            motors_ok = True
         DASH.set(target=name)
-        DASH.say(f'Trip {i}: moving towards victim {name}')
-        hazards = ([(fire['x'], fire['y'], FIRE_CLEAR_M, 'the fire')] if fire else []) + \
-                  [(o['x'], o['y'], VICTIM_CLEAR_M, f'victim {names[id(o)]}') for o in victims if o is not v]
-        DASH.set(hazards=[list(h) for h in hazards])
-        passed = go_out(nav, (v['x'], v['y']), hazards, f'victim {name}')
-        ok = False
+        DASH.say(f'Going to save victim {name}')
+        others = [(o['x'], o['y'], VICTIM_CLEAR_M, f'victim {names[id(o)]}') for o in victims if o is not target]
+        hazards = [h for h in fire_hazards(fire)] + others
+        passed = go_out(nav, (target['x'], target['y']), hazards, f'victim {name}')
+        touched = False
         if passed is not None:
-            nav.turn_to(math.atan2(v['y'] - nav.y, v['x'] - nav.x), f'facing victim {name}')
-            ok = home_on(nav, name, wrap(math.atan2(v['y'] - nav.y, v['x'] - nav.x) - nav.th),
-                         math.hypot(v['x'] - nav.x, v['y'] - nav.y))
-        if ok:
-            reached += 1
-            v['reached'] = True
-            publish()
-            DASH.say(f'REACHED victim {name}')
-            # we are just short of it, facing it: pin the position there (homing steers, so it drifted)
-            back = reach_distance() - CREEP_M
-            nav.x, nav.y = v['x'] - back * math.cos(nav.th), v['y'] - back * math.sin(nav.th)
+            nav.turn_to(math.atan2(target['y'] - nav.y, target['x'] - nav.x), f'facing victim {name}')
+            touched = home_on(nav, name, wrap(math.atan2(target['y'] - nav.y, target['x'] - nav.x) - nav.th),
+                              math.hypot(target['x'] - nav.x, target['y'] - nav.y))
+        if touched:
+            DASH.say(f'TOUCHED victim {name}')
+            back = reach_distance() - TOUCH_CREEP_M                 # we are just short of it, facing it
+            nav.x, nav.y = target['x'] - back * math.cos(nav.th), target['y'] - back * math.sin(nav.th)
             nav.moved()
         else:
             DASH.say(f'Could not reach victim {name}')
-            DASH.think(f'Victim {name} is out of reach for now - back to the start, then the next one.')
+        if nav.dead:
+            DASH.say('STOPPED: the motors cannot turn the robot (is the motor switch on? batteries?)')
+            return
         DASH.say('Returning to the start point (in reverse, along the same route)')
         come_back(nav, passed or [], fire)
-    DASH.set(target=None, path=[])
-    DASH.say(f'MISSION COMPLETE: {reached} of {len(order)} victims reached, back at the start point')
-    DASH.think(f'All done: {reached} of {len(order)} victims reached, closest to the fire first.')
+        saved.append((target['x'], target['y'], name))
+        DASH.set(target=None)
+        if touched:
+            wait_until_removed(nav, (target['x'], target['y']), name)
+        else:
+            DASH.think(f'Victim {name} could not be reached - I skip it and take the next one.')
 
 
 # ---- calibration and tests ----------------------------------------------------------------------------------------
 def calibrate_horizon(cam, dist):
-    """One wheel at a tape-measured `dist` metres straight ahead (lens to the wheel's centre, along the floor): its hub
-    row then fixes the horizon row, i.e. the camera's tilt - the error that matters most for depth (a 2 px tilt error
-    moves a wheel at 2.5 m by ~15%). Writes calibration.json, which every later run loads."""
-    print(f'Put ONE wheel {dist:.2f} m straight in front of the camera (floor distance from the lens to the middle of '
-          f'the wheel), nothing else yellow in view. Measuring in 3 s...', flush=True)
+    """One wheel at a tape-measured `dist` metres straight ahead (along the floor, from the lens to the wheel's NEAR
+    edge): where it meets the floor fixes the horizon row, i.e. the camera's tilt - the error that matters most for
+    depth. Writes calibration.json, which every later run loads."""
+    print(f'Put ONE wheel {dist:.2f} m straight in front of the camera (from the lens to the near edge of the wheel), '
+          f'nothing else in view on the floor. Measuring in 3 s...', flush=True)
     if STOP_EVENT.wait(3):
         return
     rows = []
     t_end = time.time() + 6
     while time.time() < t_end and not STOP_EVENT.is_set():
-        hubs = [b for b in cam.snap(time.time()) if b.kind == 'victim']
-        if hubs:
-            b = min(hubs, key=lambda b: abs(b.bearing))
-            rows.append(b.y + b.h / 2)
+        wheels = [b for b in cam.snap(time.time()) if b.kind == 'victim']
+        if wheels:
+            rows.append(min(wheels, key=lambda b: abs(b.bearing)).bottom)
     if len(rows) < 10:
         print(f'Saw the wheel in only {len(rows)} frames - is it in view and lit? Nothing saved.')
         return
     row = statistics.median(rows)
-    horizon = row - (CAM_HEIGHT_M - Z_M['victim']) * F_PX / dist
-    print(f'hub centre at row {row:.1f} (spread {max(rows) - min(rows):.1f} px over {len(rows)} frames) -> horizon '
-          f'row {horizon:.1f} (was {HORIZON_Y})')
+    horizon = row - CAM_HEIGHT_M * F_PX / dist
+    print(f'wheel meets the floor at row {row:.1f} (spread {max(rows) - min(rows)} px over {len(rows)} frames) -> '
+          f'horizon row {horizon:.1f} (was {HORIZON_Y})')
     CAL_FILE.write_text(json.dumps({'horizon_y': round(horizon, 1), 'measured_at_m': dist,
                                     'date': time.strftime('%Y-%m-%d %H:%M')}, indent=1) + '\n')
     print(f'saved to {CAL_FILE.name}: every run now uses it')
@@ -1041,179 +1000,82 @@ def sonar_cal(robot):
     print(f'Nearest {best} cm at servo {near[0]}..{near[-1]}: set SONAR_CENTER_DEG = {round(sum(near) / len(near))}')
 
 
-def simulate_survey(fire_xy, victims_xy, rng, px_noise=PX_NOISE, horizon_err=0.0, heading_err=0.0, pos=(0, 0),
-                    views=SURVEY_VIEWS_DEG, frame0=0):
-    """Synthetic sightings: what the survey would record from `pos` if the true layout were this, with Gaussian row
-    noise per frame, a common horizon error (camera tilt) and a heading error (bad yaw). Mirrors detect()+survey()."""
-    out, frame = [], frame0
-    objs = [('fire', fire_xy)] + [('victim', v) for v in victims_xy]
-    half = {'fire': 0.15, 'victim': 0.035}                          # half-widths: the box, a wheel
-
-    def hidden(kind, o):
-        r = math.hypot(o[0] - pos[0], o[1] - pos[1])
-        a = math.atan2(o[1] - pos[1], o[0] - pos[0])
-        # hidden only if a NEARER object covers this one's whole width as seen from pos (a wheel cannot hide the box)
-        return any(math.hypot(q[0] - pos[0], q[1] - pos[1]) < r - 0.05
-                   and abs(wrap(math.atan2(q[1] - pos[1], q[0] - pos[0]) - a)) + half[kind] / r
-                   < half[k] / math.hypot(q[0] - pos[0], q[1] - pos[1])
-                   for k, q in objs if q is not o)
-
-    objs = [(k, o) for k, o in objs if not hidden(k, o)]
-    for i, deg in enumerate(views):
-        th = math.radians(deg)
-        for _ in range(FRAMES_PER_VIEW):
-            frame += 1
-            for kind, (ox, oy) in objs:
-                r = math.hypot(ox - pos[0], oy - pos[1])
-                bearing = wrap(math.atan2(oy - pos[1], ox - pos[0]) - th)
-                if abs(bearing) > math.radians(HFOV_DEG / 2 - 2):
-                    continue
-                row = HORIZON_Y + horizon_err + (CAM_HEIGHT_M - Z_M[kind]) * F_PX / r + rng.gauss(0, px_noise)
-                rr = floor_range(kind, row)
-                if rr is None:
-                    continue
-                b = bearing + rng.gauss(0, 1 / F_PX)
-                a = th + heading_err * i + b                        # heading error grows view by view
-                out.append(Sighting(kind, pos[0] + rr * math.cos(a), pos[1] + rr * math.sin(a), rr, frame,
-                                    (frame0, i), 400 if kind == 'fire' else 120, pos[0], pos[1]))
-    return out
-
-
-def random_layout(rng):
-    """A layout like the real arena: the fire 1.8-2.6 m ahead, three wheels between, >= 0.3 m apart, >= 0.2 m from
-    the fire."""
-    fire = (rng.uniform(1.8, 2.6), rng.uniform(-0.6, 0.6))
-    vs = []
-    while len(vs) < 3:
-        p = (rng.uniform(0.6, 2.8), rng.uniform(-1.2, 1.2))
-        if math.hypot(p[0] - fire[0], p[1] - fire[1]) > 0.2 and all(math.hypot(p[0] - q[0], p[1] - q[1]) > 0.3
-                                                                     for q in vs):
-            vs.append(p)
-    return fire, vs
-
-
-def robustness(trials=2000, seed=7, quiet=False, tilt_px=2.0):
-    """Monte-Carlo over random arenas: how often is the rescue order right, versus the smallest gap between the
-    victims' TRUE fire distances? Noise: PX_NOISE px per frame, a 2 px camera-tilt (horizon) error shared by every
-    picture, 1 deg/view heading drift - and close calls re-measured from nearer the fire, as the robot does."""
-    rng = random.Random(seed)
-    bins = [(0.0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 9)]
-    stats = {b: [0, 0, 0, 0] for b in bins}                         # arenas, right first look, re-checked, right final
-    hidden = 0
-    for _ in range(trials):
-        fire, vs = random_layout(rng)
-        tilt, drift = rng.gauss(0, tilt_px), math.radians(rng.gauss(0, 1))
-        clean = simulate_survey(fire, vs, random.Random(0), px_noise=0)
-        if len(build_map(clean)[1]) != 3:                       # a wheel hidden behind the box or another wheel
-            hidden += 1
-            continue
-        f, victims = build_map(simulate_survey(fire, vs, rng, horizon_err=tilt, heading_err=drift))
-        true_d = sorted(math.hypot(v[0] - fire[0], v[1] - fire[1]) for v in vs)
-        gap = min(b - a for a, b in zip(true_d, true_d[1:]))
-        b = next(b for b in bins if b[0] <= gap < b[1])
-        stats[b][0] += 1
-        if f is None or len(victims) != 3:
-            continue                                                # counted as wrong
-
-        def right(order):
-            # which real wheel is each estimate? the one at the nearest BEARING from the start - that is the wheel
-            # the robot would home in on
-            est = [min(vs, key=lambda q: unlikeness(math.atan2(q[1], q[0]), math.hypot(*q),
-                                                    math.atan2(v['y'], v['x']), math.hypot(v['x'], v['y'])))
-                   for v in order]
-            return [math.hypot(q[0] - fire[0], q[1] - fire[1]) for q in est] == true_d
-
-        order, close = rank(victims, f)
-        stats[b][1] += right(order)
-        vp = vantage_point(f)
-        if close and vp:
-            who = [v for i, v in enumerate(order) if i in close or i - 1 in close]
-            new = simulate_survey(fire, vs, rng, horizon_err=tilt, heading_err=drift, pos=vp,
-                                  views=recheck_views(vp, f, who), frame0=10_000)
-            remeasure(who, f, new)
-            order = sorted(order, key=lambda v: v['d'])
-            stats[b][2] += 1
-        stats[b][3] += right(order)
-    if not quiet:
-        print("Rescue order right, by the smallest gap between the victims' TRUE distances to the fire:")
-        for (lo, hi), (n, first, rc, final) in stats.items():
-            if n:
-                label = f'>= {lo * 100:.0f} cm' if hi > 1 else f'{lo * 100:2.0f}-{hi * 100:2.0f} cm'
-                print(f'  gap {label:9s}: {100 * final / n:5.1f}% right  (first look alone {100 * first / n:5.1f}%; '
-                      f'{100 * rc / n:3.0f}% of arenas re-checked from nearer; {n} arenas)')
-        print(f'  ({hidden} of {trials} random arenas left out: a wheel stood hidden behind the box or another wheel '
-              f'as seen from the start, so no survey from there can find it)')
-    return stats
+def synthetic_scene(wheels, box=(100, 260, 375), seed=0):
+    """A picture like this room (bright floor, dark background above the horizon), with the box standing on the floor
+    and flat wheels (a pale-yellow rim over a black tyre) at the given (centre column, floor-contact row) - for the
+    self-test. Colours are the ones measured on 2026-10-21."""
+    rng = np.random.default_rng(seed)
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:] = (20, 80, 40)                                           # dim tan/olive background (curtain, chair)
+    hsv[int(HORIZON_Y) + 10:] = (98, 52, 168)                       # the floor
+    x0, x1, base = box
+    hsv[base - 180:base, x0:x1] = (18, 166, 61)                     # the box, standing on the floor
+    for cx, contact in wheels:
+        r = floor_range(contact)
+        half = int(0.065 / 2 * F_PX / r)
+        tyre = max(4, int(0.026 * F_PX / r))
+        hsv[contact - tyre:contact, cx - half:cx + half] = (50, 89, 20)        # black tyre
+        hsv[contact - tyre - 3:contact - tyre, cx - half:cx + half] = (28, 90, 140)   # pale-yellow rim
+    hsv = np.clip(hsv.astype(int) + rng.integers(-3, 4, hsv.shape), 0, 255).astype(np.uint8)
+    hsv[..., 0] = np.clip(hsv[..., 0], 0, 179)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
 def selftest():
-    # closest-to-fire first, even though another victim is nearer the robot
-    rng = random.Random(1)
-    fire, vs = (2.2, 0.3), [(0.8, -0.6), (1.9, 0.6), (1.4, 0.0)]
-    f, victims = build_map(simulate_survey(fire, vs, rng, px_noise=0.3))
-    order, close = rank(victims, f)
-    near = [min(vs, key=lambda q: math.hypot(q[0] - v['x'], q[1] - v['y'])) for v in order]
-    assert near == [vs[1], vs[2], vs[0]], near
-    assert abs(f['x'] - fire[0]) < 0.1 and abs(f['y'] - fire[1]) < 0.1, f
-    # same-photo distances are immune to the robot's heading error; map distances are not
-    s = simulate_survey(fire, vs, random.Random(2), px_noise=0, heading_err=math.radians(8))
-    f2, v2 = build_map(s)
-    same = 0
-    for v in v2:
-        d, _, how = fire_distance(v, f2)
-        q = min(vs, key=lambda q: abs(math.hypot(*q) - math.hypot(v['x'], v['y'])))   # range: immune to heading
-        if how == 'same-photo':
-            same += 1
-            assert abs(d - math.hypot(q[0] - fire[0], q[1] - fire[1])) < 0.03, (d, q)
-    assert same >= 2, same
-    # a fire on the straight line forces a detour that keeps its distance
-    path = plan((0, 0), (2, 0), [(1, 0.1, FIRE_CLEAR_M)])
-    assert len(path) == 2 and path[-1] == (2, 0)
+    # the detector on a picture of this room: a box and two flat wheels on the floor
+    img = synthetic_scene([(222, 377), (411, 383)])
+    blobs = detect(img)
+    fires = [b for b in blobs if b.kind == 'fire']
+    wheels = sorted((b for b in blobs if b.kind == 'victim'), key=lambda b: b.x)
+    assert len(fires) == 1 and len(wheels) == 2, [b.label() for b in blobs]
+    assert abs(fires[0].bottom - 375) <= 2 and abs(wheels[0].bottom - 377) <= 2 and abs(wheels[1].bottom - 383) <= 2
+    assert wheels[1].bearing < 0 < wheels[0].bearing                       # right of centre = negative bearing
+    # the decision: the wheel at the box's front is closest to the fire, though the other is nearer the robot
+    fire, victims = build_scene([blobs] * LOOK_FRAMES, (0.0, 0.0, 0.0))
+    assert fire is not None and len(victims) == 2, (fire, victims)
+    first = choose(victims, fire, (0, 0, 0))
+    assert first['bearing'] == max(v['bearing'] for v in victims), victims  # the left wheel, at the box
+    assert first['d'] < 0.1 and max(v['d'] for v in victims) > 0.25, [v['d'] for v in victims]
+    assert min(victims, key=lambda v: v['r']) is not first                  # nearest-first would get it wrong
+    # a speck seen in one photo out of six is noise; two blobs in one photo are two victims
+    speck = Blob('victim', 300, 380, 20, 395)
+    fire2, v2 = build_scene([blobs + [speck]] + [blobs] * (LOOK_FRAMES - 1), (0.0, 0.0, 0.0))
+    assert len(v2) == 2, v2
+    # distance to the fire is to its base EDGE: a wheel by the box's corner is close to the fire
+    a, b = (1.0, 0.2), (1.0, -0.2)                                       # a 40 cm box, 1 m ahead
+    assert seg_dist(a, b, (0.95, -0.25)) < 0.08 and math.hypot(0.95 - 1.0, -0.25) > 0.2
+    # nothing on the floor = nothing found; a dark background above the horizon is not a wheel
+    assert detect(synthetic_scene([], box=(0, 1, HORIZON_Y + 20))) == []
+    # routes: a fire on the straight line forces a detour that keeps its distance
+    path = plan((0, 0), (2, 0), [(1, 0.1, 0.4)])
+    assert len(path) == 2 and path[-1] == (2, 0) and path[0][1] < 0
     for a, b in zip([(0, 0)] + path, path):
-        assert seg_dist(a, b, (1, 0.1)) > FIRE_CLEAR_M * 0.9, (a, b)
-    assert path[0][1] < 0                                           # passes on the side away from the fire
-    assert plan((0, 0), (2, 0), [(1, 2, FIRE_CLEAR_M)]) == [(2, 0)]           # fire well off the line: straight
-    assert plan((0, 0), (2, 0), [(2.2, 0, FIRE_CLEAR_M)]) == [(2, 0)]         # victim beside the fire: reachable
-    hz = [(1, 0.1, FIRE_CLEAR_M), (1.6, -0.5, OBSTACLE_CLEAR_M)]               # fire + a sonar obstacle
-    path = plan((0, 0), (2.5, 0), hz)
-    for a, b in zip([(0, 0)] + path, path):
-        for hx, hy, c in hz:
-            assert seg_dist(a, b, (hx, hy)) > c * 0.6, (a, b, hx, hy)
-    # perception geometry
-    assert abs(Blob('victim', W // 2 - 5, 400, 10, 20).bearing) < 1e-9
-    assert Blob('victim', 10, 400, 10, 20).bearing > 0               # left half of the image = + bearing
-    assert floor_range('fire', HORIZON_Y + 30) > floor_range('fire', HORIZON_Y + 60)   # lower in the image = nearer
-    assert floor_range('fire', HORIZON_Y) is None
+        assert seg_dist(a, b, (1, 0.1)) > 0.36, (a, b)
+    assert plan((0, 0), (2, 0), [(2.2, 0, 0.4)]) == [(2, 0)]               # a victim beside the fire: reachable
+    # depth: lower in the image = nearer; at/above the horizon = no range
+    assert floor_range(HORIZON_Y + 30) > floor_range(HORIZON_Y + 60) and floor_range(HORIZON_Y) is None
+    assert 0.15 < reach_distance() < 0.3
     # turning LEFT slides the scene RIGHT: rotation() must call that +
-    img = np.float32(cv2.GaussianBlur(np.random.default_rng(1).random((230, 480)), (0, 0), 3))
-    a, conf = rotation(img, np.roll(img, 40, axis=1))
-    assert math.degrees(a) > 3 and conf > VO_MIN_CONF
-    assert math.degrees(rotation(img, np.roll(img, -40, axis=1))[0]) < -3
-    # arcs: both arcs of a turn turn the SAME way (left: right side faster forwards, and faster backwards too)
+    band = np.float32(cv2.GaussianBlur(np.random.default_rng(1).random((230, 480)), (0, 0), 3))
+    assert math.degrees(rotation(band, np.roll(band, 40, axis=1))[0]) > 3
+    assert math.degrees(rotation(band, np.roll(band, -40, axis=1))[0]) < -3
+    # arcs: both arcs of a turn turn the SAME way, and all wheels roll the same direction (no skid)
     for left, (fwd, back) in ARCS.items():
-        lf, rf = fwd[0] * wb.FORWARD_SIGN[0], fwd[3] * wb.FORWARD_SIGN[3]      # side powers (M1 left, M4 right),
-        lb, rb = back[0] * wb.FORWARD_SIGN[0], back[3] * wb.FORWARD_SIGN[3]    # + = that side drives forward
-        assert (rf - lf > 0) == left and (rb - lb > 0) == left and lf > 0 and lb < 0, (left, fwd, back)
-    assert 0.10 < reach_distance() < 0.25
-    # ranking quality: with this camera's noise, wide gaps must essentially always come out right
-    st = robustness(400, quiet=True)
-    n, _, _, ok = st[(0.3, 9)]
-    assert n and ok / n > 0.95, (n, ok)                              # measured 98.8% over 1500 arenas
+        lf, rf = fwd[0] * wb.FORWARD_SIGN[0], fwd[3] * wb.FORWARD_SIGN[3]
+        lb, rb = back[0] * wb.FORWARD_SIGN[0], back[3] * wb.FORWARD_SIGN[3]
+        assert (rf - lf > 0) == left and (rb - lb > 0) == left and min(lf, rf) > 0 and max(lb, rb) < 0
     json.loads(DASH.json())
     print('selftest: OK')
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    for flag in ('--view', '--survey', '--sonar-cal', '--selftest', '--robustness'):
+    for flag in ('--view', '--plan', '--sonar-cal', '--selftest'):
         ap.add_argument(flag, action='store_true')
     ap.add_argument('--calibrate-horizon', type=float, metavar='METRES')
     args = ap.parse_args()
     if args.selftest:
         selftest()
-        return
-    if args.robustness:
-        robustness()
         return
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *_: STOP_EVENT.set())
@@ -1232,18 +1094,13 @@ def main():
             return
         robot = Uno(False)
         robot.open()
-        robot.look(SONAR_CENTER_DEG)                                # the Uno resets on every open: servo to centre
+        robot.look(SONAR_CENTER_DEG)                                # centred before anything else happens
         if args.sonar_cal:
             sonar_cal(robot)
             return
-        for n in range(wb.COUNTDOWN_S, 0, -1):
-            DASH.set(state=f'starting in {n} s')
-            print(f'Moving in {n}... (Ctrl+C to cancel)', flush=True)
-            if STOP_EVENT.wait(1):
-                return
-        print(f'camera at {cam.fps:.1f} fps', flush=True)
-        mission(Nav(robot, cam), drive=not args.survey)
-        DASH.set(state='finished - Ctrl+C to exit (the dashboard stays up until then)')
+        STOP_EVENT.wait(2)                                          # let the camera settle
+        mission(Nav(robot, cam), drive=not args.plan)
+        DASH.set(state=DASH.state if args.plan else 'finished - Ctrl+C to exit (the dashboard stays up until then)')
         STOP_EVENT.wait()                                           # keep the dashboard up to read the result
     except KeyboardInterrupt:
         pass
