@@ -14,17 +14,23 @@ What is actually built (October 2026):
 
 ## The task
 
-The **fire** is the tan cardboard box; the **victims** are wheels lying flat on the floor. Everything is placed in
-front of the robot, in view from its start spot, so it never scans by turning. Each round the robot:
+The **fire** is the tan cardboard box or the red bag; the **victims** are wheels, flat or standing. The robot's
+start spot is the **safe area**; everything is placed in front of it, in view, so it never scans by turning. It runs
+until Ctrl+C:
 
-1. looks (it stays put; the sonar servo, already centred, sweeps left and right),
-2. finds the fire and every victim, and picks the victim **closest to the fire**,
-3. drives to it and touches it, on a route that keeps clear of the box,
-4. reverses back to the start spot,
-5. waits for you to lift that victim away, then looks again and takes the next closest one.
+1. It watches the arena from the safe area. The sonar servo, already centred, sweeps once at the start.
+2. When victims are in view, it picks the one **closest to the fire**.
+3. It drives to that victim on a route that keeps clear of the fire. On reaching it, it says **RESCUED**.
+4. It reverses back to the safe area and says **SAVED**.
+5. It waits for you to take that victim out of the arena, then watches again.
 
-It stops when no victim is left in view. Nothing about the layout is in the code: every round decides afresh, so the
-wheels can be anywhere it can see.
+**Adding victims:** add them whenever you like. Every look decides afresh, and a new victim on an old spot counts as
+new.
+
+**When a victim gets close:** the wheel drops out of the camera's view. If it was last seen within 45 cm, the robot
+creeps the rest of the way and counts it as reached.
+
+**Victims it can't reach:** it comes back and tries again, and leaves that spot alone after two failed tries.
 
 ## Run it
 

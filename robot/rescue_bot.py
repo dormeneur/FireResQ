@@ -2,13 +2,13 @@
 """FIRERESQ RESCUE BOT - run ON THE PI, from the same folder as wander_bot.py, wander_fw.hex and dashboard.html.
 
 THE TASK. In front of the robot stand a FIRE (the tan cardboard box) and VICTIMS (wheels lying flat on the floor).
-Everything is in view from the start spot, so the robot never scans by turning. Each round it:
-    1. looks (wheels still; the sonar servo, centred first, sweeps left and right),
-    2. finds the fire and every victim, and picks the victim CLOSEST TO THE FIRE,
-    3. drives to it and touches it (on a route that keeps clear of the box),
-    4. reverses back to the start spot (the home region),
-    5. waits for you to lift that victim away, then looks again for the next one.
-It stops when no victim is left in view. Nothing about the layout is in the code: every round decides afresh.
+Everything is in view from the start spot (the SAFE AREA), so the robot never scans by turning. It runs until Ctrl+C:
+    1. it watches the arena from the safe area (the sonar servo, centred first, sweeps once at the start),
+    2. when victims are in view it picks the one CLOSEST TO THE FIRE,
+    3. drives to it (on a route that keeps clear of the fire) until it reaches it - "RESCUED",
+    4. reverses back to the safe area - "SAVED",
+    5. waits for you to take that victim out of the arena, then watches again.
+Add victims whenever you like: every look decides afresh, nothing about the layout is in the code.
 
     python3 -u rescue_bot.py --view          # camera + detection only, motors untouched
     python3 -u rescue_bot.py --plan          # look and decide, print/show the plan - never moves
@@ -147,6 +147,7 @@ FIRE_STOP_M = 0.15                       # the fire straight ahead, this close a
 HOP_M = 0.20                             # homing: drive at most this far between still pictures
 CENTER_TOL_DEG = 4                       # ...and only once the victim is within this of the picture's centre
 MAX_HOPS = 40
+CLOSE_LOST_M = 0.45                      # a victim last seen this close and then out of view is right in front
 TRACK_GATE_DEG = 12                      # victims look alike: a tracked blob must stay this close to where it was
 ACQUIRE_GATE_DEG = 25                    # ...and this close to the map's prediction when homing starts
 CLOSE_FRAC = 0.95                        # the tyre's floor contact this low in the image = right in front
@@ -155,9 +156,11 @@ TOUCH_CREEP_M = 0.17                     # then creep this far, blind, to touch:
 #                                          pushes the wheel
 HOME_TOL_M = 0.12                        # back at the start when re-localised within this
 MAX_FIX_M = 0.6                          # a fire-based correction bigger than this is a mis-sighting: ignored
-GONE_LOOKS = 2                           # the touched victim must be missing from this many looks in a row...
-REMOVE_TIMEOUT_S = 120                   # ...or, after this long, the robot carries on without it
-SAME_VICTIM_M = 0.25                     # a victim within this of a rescued one's spot IS the rescued one
+GONE_LOOKS = 2                           # the saved victim must be missing from this many looks in a row...
+REMOVE_TIMEOUT_S = 120                   # ...or, after this long, the robot carries on and ignores that spot
+SAME_VICTIM_M = 0.25                     # a victim within this of an ignored spot IS the ignored one
+MAX_TRIES = 2                            # attempts on one victim before ignoring its spot
+WATCH_S = 2.0                            # nothing to rescue: look again from the safe area this often
 MOTOR_ON_COUNTDOWN_S = 15                # after the first decision: time to switch the motor battery on
 
 
@@ -823,12 +826,22 @@ def home_on(nav, name, bearing, rng):
     nav.robot.aim(SONAR_CENTER_DEG)
     nav.obstacle = None
     track, gate, misses, locked = bearing, math.radians(ACQUIRE_GATE_DEG), 0, False
+    last_range = rng
     for _ in range(MAX_HOPS):
         if STOP_EVENT.is_set():
             return False
         blobs = [b for frame in nav.look(2) for b in frame]          # two still photos
         mine = [b for b in blobs if b.kind == 'victim' and b.range is not None and abs(b.bearing - track) < gate]
         if not mine:
+            if locked and last_range <= CLOSE_LOST_M:
+                # up close the wheel drops out of the bottom of the picture: it was centred and this near, so it is
+                # right in front - creep the rest of the way
+                creep = max(0.0, min(CLOSE_LOST_M, last_range - (reach_distance() - TOUCH_CREEP_M)))
+                DASH.say(f'Victim {name} is too close for the camera now ({last_range * 100:.0f} cm when last seen) '
+                         f'- creeping {creep * 100:.0f} cm to reach it')
+                nav.leg(creep, nav.th, label=f'victim {name}', quiet=True, checks=False)
+                nav.pause(0.5, f'at victim {name}')
+                return True
             misses += 1
             if misses >= 3:
                 DASH.say(f'Lost sight of victim {name}')
@@ -839,6 +852,7 @@ def home_on(nav, name, bearing, rng):
         b = (min(mine, key=lambda b: abs(b.bearing - track)) if locked else
              min(mine, key=lambda b: (math.degrees(b.bearing - bearing) / 3) ** 2 + ((b.range - rng) / 0.15) ** 2))
         locked = True
+        last_range = b.range
         STATUS.state = f'homing on victim {name}: {b.label()}'
         if b.bottom >= H * CLOSE_FRAC:
             DASH.say(f'Victim {name} is right in front - creeping {TOUCH_CREEP_M * 100:.0f} cm to touch it')
@@ -925,8 +939,9 @@ def come_back(nav, passed, fire):
 
 
 def wait_until_removed(nav, spot, name):
-    """Stay put until the touched victim is gone from its spot (GONE_LOOKS looks in a row), or REMOVE_TIMEOUT_S."""
-    DASH.say(f'Please pick up victim {name} (I touched it). I will wait here.')
+    """Stay put until the saved victim is gone from its spot (GONE_LOOKS looks in a row): True. False after
+    REMOVE_TIMEOUT_S (the caller then ignores that spot)."""
+    DASH.say(f'Please take victim {name} out of the arena. I will wait here.')
     gone, t_end = 0, time.time() + REMOVE_TIMEOUT_S
     while not STOP_EVENT.is_set() and time.time() < t_end:
         _, victims = look_at_scene(nav, 3)
@@ -934,10 +949,11 @@ def wait_until_removed(nav, spot, name):
         gone = 0 if still else gone + 1
         STATUS.state = f'waiting for victim {name} to be picked up ({int(t_end - time.time())} s)'
         if gone >= GONE_LOOKS:
-            DASH.say(f'Victim {name} has been picked up - SAVED.')
-            return
+            DASH.say(f'Victim {name} has been taken out of the arena.')
+            return True
         STOP_EVENT.wait(1.5)
-    DASH.say(f'Victim {name} was not picked up in {REMOVE_TIMEOUT_S} s - I will ignore that spot from now on.')
+    DASH.say(f'Victim {name} was not taken out in {REMOVE_TIMEOUT_S} s - I will ignore that spot.')
+    return False
 
 
 def publish_scene(fire, victims, names, order, saved):
@@ -953,34 +969,54 @@ def publish_scene(fire, victims, names, order, saved):
     DASH.set(objs=objs, hazards=[list(h) for h in fire_hazards(fire)])
 
 
+def victim_name(i):
+    """A, B, ... Z, AA, AB, ... - victims keep coming."""
+    return victim_name(i // 26 - 1) + chr(ord('A') + i % 26) if i >= 26 else chr(ord('A') + i)
+
+
 def mission(nav, drive=True):
+    """Runs until Ctrl+C: watch the arena from the safe area (the start), rescue the victim closest to the fire, come
+    back, wait for it to be taken out, look again. Victims may be added at any time."""
     DASH.say('Staying where I am. Centring the sonar, then looking left and right.')
     sonar_sweep(nav.robot)
-    saved = []                                                      # [(x, y, name)]: touched and returned from
-    letters = iter('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-    motors_ok = False
+    saved_n, named, known = 0, 0, []                               # known: [(x, y, name)] from the last look
+    history = []                                                    # [(x, y, name)]: saved, for the map
+    ignored = []                                                    # [(x, y)]: spots never removed / never reached
+    tries = []                                                      # [[x, y, n]]: failed attempts per spot
+    motors_ok, watching = False, False
     while not STOP_EVENT.is_set():
-        DASH.say('Looking at the arena')
         fire, victims = look_at_scene(nav)
         victims = [v for v in victims if all(math.hypot(v['x'] - s[0], v['y'] - s[1]) >= SAME_VICTIM_M
-                                             for s in saved)]
-        victims.sort(key=lambda v: -v['bearing'])                   # names left to right, this round
-        names = {id(v): next(letters) for v in victims}
-        if fire is None:
-            DASH.think('I cannot see the fire. Without it I cannot judge danger, so I will take the nearest victim.')
+                                             for s in ignored)]
+        victims.sort(key=lambda v: -v['bearing'])                   # new names go left to right
+        names = {}
+        for v in victims:                                           # a victim keeps its name from the last look
+            old = next((k for k in known if math.hypot(k[0] - v['x'], k[1] - v['y']) < SAME_VICTIM_M), None)
+            names[id(v)] = old[2] if old else victim_name(named)
+            named += old is None
+        known = [(v['x'], v['y'], names[id(v)]) for v in victims]
         order = sorted(victims, key=lambda v: v['d'] if fire else v['r'])
-        publish_scene(fire, victims, names, order, saved)
+        publish_scene(fire, victims, names, order, history)
         if not victims:
-            DASH.say(f'MISSION COMPLETE: no victims left in view. {len(saved)} saved.')
-            DASH.think(f'Everyone I could see has been saved ({len(saved)}), closest to the fire first.')
-            DASH.set(target=None, path=[])
-            return
+            if not drive:
+                DASH.think('No victims in view.')
+                return
+            if not watching:
+                DASH.say(f'Watching the arena from the safe area ({saved_n} saved so far). Add a victim any time.')
+                watching = True
+            DASH.set(target=None, path=[], state='watching from the safe area - add a victim')
+            STOP_EVENT.wait(WATCH_S)
+            continue
+        watching = False
+        DASH.say('Looking at the arena')
         if fire:
             DASH.think(f'Fire {fire["r"]:.2f} m ahead, {abs(math.degrees(fire["bearing"])):.0f} deg '
                        f'{"left" if fire["bearing"] > 0 else "right"}. I see {len(victims)} '
                        f'victim{"s" * (len(victims) != 1)}:')
             for v in order:
                 DASH.think(f'  victim {names[id(v)]}: {v["d"]:.2f} m from the fire, {v["r"]:.2f} m from me')
+        else:
+            DASH.think('I cannot see the fire. Without it I cannot judge danger, so I will take the nearest victim.')
         target = choose(victims, fire, nav.pose)
         name = names[id(target)]
         if fire and len(order) > 1:
@@ -1005,29 +1041,40 @@ def mission(nav, drive=True):
         others = [(o['x'], o['y'], VICTIM_CLEAR_M, f'victim {names[id(o)]}') for o in victims if o is not target]
         hazards = [h for h in fire_hazards(fire)] + others
         passed = go_out(nav, (target['x'], target['y']), hazards, f'victim {name}')
-        touched = False
+        reached = False
         if passed is not None:
             nav.turn_to(math.atan2(target['y'] - nav.y, target['x'] - nav.x), f'facing victim {name}')
-            touched = home_on(nav, name, wrap(math.atan2(target['y'] - nav.y, target['x'] - nav.x) - nav.th),
+            reached = home_on(nav, name, wrap(math.atan2(target['y'] - nav.y, target['x'] - nav.x) - nav.th),
                               math.hypot(target['x'] - nav.x, target['y'] - nav.y))
-        if touched:
-            DASH.say(f'TOUCHED victim {name}')
+        if reached:
+            DASH.say(f'Victim {name} RESCUED - I reached it. Going back to the safe area.')
             back = reach_distance() - TOUCH_CREEP_M                 # we are just short of it, facing it
             nav.x, nav.y = target['x'] - back * math.cos(nav.th), target['y'] - back * math.sin(nav.th)
             nav.moved()
         else:
-            DASH.say(f'Could not reach victim {name}')
+            DASH.say(f'Could not reach victim {name} - going back to the safe area.')
         if nav.dead:
             DASH.say('STOPPED: the motors cannot turn the robot (is the motor switch on? batteries?)')
             return
-        DASH.say('Returning to the start point (in reverse, along the same route)')
         come_back(nav, passed or [], fire)
-        saved.append((target['x'], target['y'], name))
         DASH.set(target=None)
-        if touched:
-            wait_until_removed(nav, (target['x'], target['y']), name)
+        if reached:
+            saved_n += 1
+            history.append((target['x'], target['y'], name))
+            DASH.say(f'Victim {name} SAVED - I am back in the safe area ({saved_n} saved so far).')
+            if not wait_until_removed(nav, (target['x'], target['y']), name):
+                ignored.append((target['x'], target['y']))
         else:
-            DASH.think(f'Victim {name} could not be reached - I skip it and take the next one.')
+            t = next((t for t in tries if math.hypot(t[0] - target['x'], t[1] - target['y']) < SAME_VICTIM_M), None)
+            if t is None:
+                t = [target['x'], target['y'], 0]
+                tries.append(t)
+            t[2] += 1
+            if t[2] >= MAX_TRIES:
+                ignored.append((t[0], t[1]))
+                DASH.think(f'Victim {name} could not be reached in {MAX_TRIES} tries - I leave that spot alone.')
+            else:
+                DASH.think(f'Victim {name} could not be reached - I will try again.')
 
 
 # ---- calibration and tests ----------------------------------------------------------------------------------------
