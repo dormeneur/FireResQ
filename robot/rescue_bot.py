@@ -33,9 +33,8 @@ the pixel column. "Closest to the fire" is the victim's distance to the box's BA
 the box is ~40 cm wide, so a wheel by its corner is close to the fire even if far from its centre), measured inside
 each photo (the robot's own errors cancel) and taken as the median over several photos.
 
-MOVING (no encoders): turns are PIVOTS (one side drives, the other stops - measured: arcs and skid spins do
-not turn this robot on tile; forward then backward pivots), heading comes from the camera (image shift between consecutive frames), straight
-legs hold that heading and are timed, the way home is driven IN REVERSE along the same route, and the fire, seen from
+MOVING (no encoders): turns are SKID spins (one side forward, the other backward), heading comes from the camera
+(image shift between consecutive frames), straight legs hold that heading and are timed, the way home is driven IN REVERSE along the same route, and the fire, seen from
 the start, re-anchors position and heading. Map frame = the start pose: x forward, y left, angles CCW (+ = left).
 """
 import argparse
@@ -92,27 +91,24 @@ BOX_COLOUR = {'fire': (0, 0, 255), 'victim': (0, 255, 255)}
 MOTOR_SUPPLY_V = 6.0                     # pack on EXT_PWR: 4xAA or 8xAA in PARALLEL = 6.0, 8xAA in series = 12.0
 POWER_SCALE = min(1.0, 7.5 / (MOTOR_SUPPLY_V - 2.0))
 wb.MAX_POWER = round(255 * POWER_SCALE)  # nothing is ever commanded above this
-# One motor turns slower than the other three. The weak motor gets the full command and the other three are scaled to
-# WEAK_RATIO of it, so all four match at the top. Heading hold on straight legs mops up whatever this misses.
-WEAK_MOTOR = 3                           # TODO(calibrate): shield terminal M1..M4 of the slow motor
-WEAK_RATIO = 0.85                        # TODO(calibrate): see the 'steering bias' line each straight leg prints
-wb.TRIM = tuple(1.0 if m + 1 == WEAK_MOTOR else WEAK_RATIO for m in range(4))
-# PIVOT turns: one side drives (forward or backward), the other side STOPS. Measured on the tile floor, 2026-10-21,
-# 1 s each: an arc (one side full, the other half) turned the robot 1.7 deg - it just rolls almost straight; a pivot
-# turned it 13-19 deg. Each turn alternates a forward pivot and a backward pivot of the OTHER side: both rotate the
-# same way, and their forward/backward creep cancels, so the robot turns about on the spot.
-PIVOT_POWER = 255
-PIVOTS = {True: (wb.drive_powers(0, PIVOT_POWER), wb.drive_powers(-PIVOT_POWER, 0)),      # LEFT: right fwd, left back
-          False: (wb.drive_powers(PIVOT_POWER, 0), wb.drive_powers(0, -PIVOT_POWER))}     # RIGHT: left fwd, right back
-PIVOT_MAX_S = 1.0                        # longest single pivot before switching to the other one
+# M2 (back-left) and M4 (front-right) are stronger than M1 and M3 (the maintainer, 2026-10-22). The strong pair is
+# scaled down to STRONG_RATIO so all four match; heading hold on straight legs mops up whatever this misses.
+STRONG_MOTORS = (2, 4)                   # shield terminals M1..M4
+STRONG_RATIO = 0.85                      # TODO(calibrate): see the 'steering bias' line each straight leg prints
+wb.TRIM = tuple(STRONG_RATIO if m + 1 in STRONG_MOTORS else 1.0 for m in range(4))
+# SKID (differential) turns, on the maintainer's instruction: one side forward, the other backward, so the robot
+# spins about its centre (the chassis is too big to swing round a pivot). Both entries of a turn are the same spin.
+SPIN_POWER = 255
+SPINS = {True: (wb.drive_powers(-SPIN_POWER, SPIN_POWER),) * 2,      # LEFT: left side back, right side forward
+         False: (wb.drive_powers(SPIN_POWER, -SPIN_POWER),) * 2}     # RIGHT: left side forward, right side back
+SPIN_MAX_S = 1.0                         # longest single spin before stopping to let the camera check the heading
 TURN_TOL_DEG = 3.0
 TURN_LEAD_DEG = 4.0                      # stop an arc this early: the camera reports ~1 frame late and the robot coasts
 STALL_DEG = 1.0                          # an arc that turned less than this did not move the robot
 MAX_STALLS = 6
-MAX_PIVOTS = 24                          # give up a turn after this many pivots (it is oscillating or stuck)
+MAX_SPINS = 24                           # give up a turn after this many spins (it is oscillating or stuck)
 CRUISE = round(210 * POWER_SCALE)        # forward power for legs and homing
 CRUISE_MPS = 0.25                        # TODO(calibrate): forward speed at CRUISE. Reverse return cancels its error
-PIVOT_MPS = CRUISE_MPS * PIVOT_POWER / 2 / 210            # how fast a pivot carries the robot's centre along
 K_HEAD = 160                             # steering power per radian of heading error on straight legs
 SETTLE_S = 0.35                          # stop this long before trusting a frame
 CYCLE_S = 0.06                           # control loop period (the Uno's watchdog is 400 ms)
@@ -550,7 +546,7 @@ class Uno(wb.Robot):
 
 class Nav:
     """The robot's pose in the map (the start pose's frame). Heading = the camera's integrated yaw minus an offset that
-    the fire re-anchors; position = dead reckoning (timed legs, pivots), re-anchored on the fire at the start.
+    the fire re-anchors; position = dead reckoning (timed legs), re-anchored on the fire at the start.
     `obstacle` = where the sonar last stopped a leg; `dead` = the motors will not turn the robot."""
 
     def __init__(self, robot, cam):
@@ -587,27 +583,24 @@ class Nav:
         self.y += dist * math.sin(self.th)
 
     def turn_to(self, target, state='turning'):
-        """PIVOT turn until the camera-measured heading is within TURN_TOL_DEG of `target` (rad). Forward and backward
-        pivots alternate so the robot stays roughly in place. False if it will not turn (self.dead is then set)."""
+        """SKID turn (spin on the spot) until the camera-measured heading is within TURN_TOL_DEG of `target` (rad).
+        False if it will not turn (self.dead is then set)."""
         tol, lead = math.radians(TURN_TOL_DEG), math.radians(TURN_LEAD_DEG)
         if abs(wrap(target - self.th)) <= tol:
             return True
-        DASH.say(f'Turning {math.degrees(wrap(target - self.th)):+.0f} deg (pivots)')
+        DASH.say(f'Turning {math.degrees(wrap(target - self.th)):+.0f} deg (skid spin)')
         fwd, stalls = True, 0
-        for _ in range(MAX_PIVOTS):
+        for _ in range(MAX_SPINS):
             err = wrap(target - self.th)
             if abs(err) <= tol or STOP_EVENT.is_set():
                 break
             left = err > 0
-            powers = PIVOTS[left][0 if fwd else 1]
-            th0, t0, last = self.th, time.time(), time.time()
-            while time.time() - t0 < PIVOT_MAX_S and not STOP_EVENT.is_set():
+            powers = SPINS[left][0 if fwd else 1]
+            th0, t0 = self.th, time.time()
+            while time.time() - t0 < SPIN_MAX_S and not STOP_EVENT.is_set():
                 self.robot.drive(powers)
                 time.sleep(CYCLE_S)
-                now = time.time()
-                self._advance(PIVOT_MPS * (now - last) * (1 if fwd else -1))
-                last = now
-                e = wrap(target - self.th)
+                e = wrap(target - self.th)                          # a spin turns on the spot: no advance
                 if abs(e) <= lead or (e > 0) != left:              # there (allowing for lag), or crossed over
                     break
                 STATUS.state = f'{state}: {math.degrees(e):+.0f} deg to go'
@@ -617,10 +610,10 @@ class Nav:
             if abs(wrap(self.th - th0)) < math.radians(STALL_DEG):
                 stalls += 1
                 if stalls >= MAX_STALLS:
-                    DASH.say('The pivots are not turning the robot - stopping (motor switch off? battery? stuck?)')
+                    DASH.say('The spins are not turning the robot - stopping (motor switch off? battery? stuck?)')
                     self.dead = True
                     return False
-                DASH.say('That pivot did not turn the robot - trying again')
+                DASH.say('That spin did not turn the robot - trying again')
                 self.pause(1.0)
             else:
                 stalls = 0
@@ -676,7 +669,7 @@ class Nav:
         self.pause(0.25)
         if n and abs(steer_sum / n) > 15:
             print(f'  steering bias {steer_sum / n:+.0f} (+ = right side needed more power): '
-                  f'tune WEAK_MOTOR / WEAK_RATIO', flush=True)
+                  f'tune STRONG_MOTORS / STRONG_RATIO', flush=True)
         return True
 
     def go_to(self, p, label, reverse_ok=False):
@@ -1058,12 +1051,14 @@ def selftest():
     band = np.float32(cv2.GaussianBlur(np.random.default_rng(1).random((230, 480)), (0, 0), 3))
     assert math.degrees(rotation(band, np.roll(band, 40, axis=1))[0]) > 3
     assert math.degrees(rotation(band, np.roll(band, -40, axis=1))[0]) < -3
-    # pivots: both pivots of a turn rotate the SAME way; each moves one side only (never a skid)
-    for left, (fwd, back) in PIVOTS.items():
-        lf, rf = fwd[0] * wb.FORWARD_SIGN[0], fwd[3] * wb.FORWARD_SIGN[3]
-        lb, rb = back[0] * wb.FORWARD_SIGN[0], back[3] * wb.FORWARD_SIGN[3]
-        assert (rf - lf > 0) == left and (rb - lb > 0) == left, (left, fwd, back)
-        assert 0 in (lf, rf) and 0 in (lb, rb) and max(lf, rf) > 0 and min(lb, rb) < 0
+    # skid spins: the two sides run opposite ways, and a LEFT spin has the right side going forward
+    for left, (spin, _) in SPINS.items():
+        sides = [spin[m] * wb.FORWARD_SIGN[m] for m in range(4)]           # + = that motor drives forward
+        lft, rgt = (sides[0], sides[1]), (sides[3], sides[2])               # M1+M2 left, M4+M3 right
+        assert all(v > 0 for v in (rgt if left else lft)) and all(v < 0 for v in (lft if left else rgt)), (left, spin)
+    # the strong motors (M2, M4) get less power than the others for the same command
+    fwd = wb.drive_powers(200, 200)
+    assert abs(fwd[1]) < abs(fwd[0]) and abs(fwd[3]) < abs(fwd[2]), fwd
     json.loads(DASH.json())
     print('selftest: OK')
 

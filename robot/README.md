@@ -71,15 +71,14 @@ biggest depth error, into `calibration.json` (kept out of git: it belongs to one
 
 ## Moving without encoders
 
-Measured on the tile floor, 1 s each (2026-10-21): a skid spin and an arc (one side full, the other half) barely turn
-the robot (an arc: 1.7°); a **pivot**, where one side drives and the other stops, turns it 13–19°. So:
-
-- **Turns are pivots.** A forward pivot then a backward pivot of the other side: both rotate the same way and
-  their creep cancels, so the robot turns roughly on the spot.
+- **Turns are skid spins** (differential): one side forward, the other backward, so the robot spins about its
+  centre. Pivots (one side stopped) swing the big chassis around a corner, which doesn't work here.
+- **Motor balance:** M2 (back-left) and M4 (front-right) are stronger, so they are scaled to `STRONG_RATIO` (85%)
+  to match M1 and M3.
 - **Heading comes from the camera.** It adds up the image shift between consecutive frames; measured, it tracks
-  the pivots while they happen.
+  the turns while they happen.
 - **Straight legs hold that heading.** This also cancels the slow motor's pull. If the log keeps printing
-  `steering bias`, tune `WEAK_MOTOR` / `WEAK_RATIO`.
+  `steering bias`, tune `STRONG_RATIO`.
 - **Homing is stop-and-go.** Look at a still picture, turn to face the victim if needed, drive a hop of at most
   20 cm, repeat. In this light a moving camera blurs the thin yellow rim away. When the victim is right in front
   (~22 cm), the robot creeps `TOUCH_CREEP_M` (17 cm) blind to touch it.
@@ -112,5 +111,5 @@ Rebuild it after editing (`arduino-cli`, AVR core, "Adafruit Motor Shield librar
 | `HORIZON_Y` | 318 by default; `--calibrate-horizon` measures it |
 | `TOUCH_CREEP_M` | 0.17 m: raise it if the robot stops short of the wheel, lower it if it pushes the wheel |
 | `SONAR_CENTER_DEG` | 128 (also `SERVO_CENTER_DEG` in the firmware) |
-| `WEAK_MOTOR`, `WEAK_RATIO` | M3 at 85%, a guess. Tune from the `steering bias` lines |
+| `STRONG_MOTORS`, `STRONG_RATIO` | M2 and M4 at 85%. Tune from the `steering bias` lines |
 | `CRUISE_MPS` | 0.25 m/s, a guess. The reverse return and the fire re-anchoring make it matter little |
