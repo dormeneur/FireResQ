@@ -75,14 +75,26 @@ except (OSError, ValueError, KeyError):
 
 # ---- what to look for (HSV, OpenCV: H 0-179), sampled from this camera in this room on 2026-10-21 ------------------
 FLOOR_V = 100                            # the floor is bright (V 160-180); anything darker is an object on it
-DARK_V = 50                              # a black tyre (V 10-30)
+DARK_V = 50                              # a black tyre (V 7-30)
+PUCK_V = 30                              # a puck must be THIS dark: the box's shadow (V 35-50) must not join it
 RIM_HSV = ((18, 35, 95), (38, 255, 255))  # the pale-yellow rim of a flat wheel: H 25-33, S 43-130, V 120-155
-TAN_HSV = ((15, 100, 35), (26, 255, 130))  # the cardboard box: H 19-21 (S 104-200, V 46-69); an orange cushion
-#                                           (H 11-12) must stay out
+TAN_HSV = ((15, 70, 52), (26, 255, 130))   # the cardboard box: H 19-21, S 66-200, V 55-80; an orange cushion
+#                                           (H 11-12) and the dimmer curtain and chair (V 45-51) must stay out.
+#                                           Glare off its plastic wrap is NOT tan (S ~40)
+# The fire can also be RED (the red bag used on 2026-10-22: H 0-3/179, S 184-235, V 62-112; the orange cushion, H ~12,
+# V ~45, stays out).
+RED_HSV = (((0, 150, 55), (4, 255, 255)), ((170, 150, 55), (179, 255, 255)))
+FIRE_MASKS = {'tan': (TAN_HSV,), 'red': RED_HSV}
+# Wheels can also STAND UP: a round, bright-yellow hub (H 26-30, S 138-209, V 123-140) over a black tyre.
+HUB_HSV = ((20, 100, 90), (36, 255, 255))
+HUB_WIDTH_M = (0.02, 0.07)               # a hub is ~4.5 cm across
+WHEEL_RADIUS_M = 0.0325                  # a standing wheel's hub centre is this high above the floor
 FIRE_MIN_AREA = 1500                     # px: the box is big; a tan speck is not the fire
 FIRE_MIN_WIDTH_M = 0.20                  # ...and its base is ~40 cm wide in real life
 MAX_RANGE_M = 4.0                        # ignore anything further away than this
-WHEEL_WIDTH_M = (0.03, 0.12)             # a blob must be this wide in real life to be a wheel
+WHEEL_WIDTH_M = (0.03, 0.12)             # a wheel found by its rim must be this wide in real life (part of a rim
+#                                          may be unlit)
+PUCK_WIDTH_M = (0.045, 0.12)             # a dark puck must be wheel-sized (6.5 cm): a shadow under a cloth is ~3 cm
 BOX_COLOUR = {'fire': (0, 0, 255), 'victim': (0, 255, 255)}
 
 # ---- motion -----------------------------------------------------------------------------------------------------
@@ -123,7 +135,7 @@ SWEEP_DEG = (-40, -20, 0, 20, 40)        # the look-around at the start: right t
 OBSTACLE_CM = 22                         # something this close ahead (and closer than the target) = stop
 
 # ---- mission ----------------------------------------------------------------------------------------------------
-LOOK_FRAMES = 6                          # photos per look; an object must be in most of them to count
+LOOK_FRAMES = 8                          # photos per look: the fire must be in most, a victim in a third
 MERGE_M = 0.20                           # sightings of a victim closer than this (across photos) are the same victim
 FIRE_CLEAR_M = 0.20                      # routes keep this far from the box's base edge...
 VICTIM_CLEAR_M = 0.18                    # ...and from the victims that are not the current target
@@ -243,10 +255,11 @@ class Blob:
 
 
 def floor_below(hsv, x, w, bottom):
-    """Is the strip just under columns x..x+w at `bottom` bright, unsaturated floor? (= the object stands there)"""
-    y0, y1 = min(H - 1, bottom + 2), min(H, bottom + 8)
+    """Is the strip just under columns x..x+w at `bottom` unsaturated floor? (= the object stands there). Not
+    'bright': the glossy floor reflects a dark object right under it (V 60-100 there, 160+ further off)."""
+    y0, y1 = min(H - 1, bottom + 3), min(H, bottom + 12)
     strip = hsv[y0:y1, x + w // 4: max(x + w - w // 4, x + w // 4 + 1)]
-    return strip.size > 0 and np.median(strip[..., 2]) > FLOOR_V + 10 and np.median(strip[..., 1]) < 90
+    return strip.size > 0 and np.median(strip[..., 2]) > 70 and np.median(strip[..., 1]) < 90
 
 
 def wheels_from_rims(hsv):
@@ -263,50 +276,107 @@ def wheels_from_rims(hsv):
             dark += np.median(hsv[yy, cols, 2]) < DARK_V
             yy += 1
         r = floor_range(yy) if yy < H and yy - (y + h) <= 60 else None
-        if 3 <= dark <= 50 and r and WHEEL_WIDTH_M[0] <= w * r / F_PX <= WHEEL_WIDTH_M[1]:
-            out.append(Blob('victim', x, y, w, yy))
+        if 3 <= dark <= 50 and r:
+            mid = (y + h + yy) // 2                                 # a row through the middle of the tyre
+            xl, xr = x + w // 2, x + w // 2
+            while xl > 0 and hsv[mid, xl - 1, 2] < DARK_V:
+                xl -= 1
+            while xr < W - 1 and hsv[mid, xr + 1, 2] < DARK_V:
+                xr += 1
+            if xr - xl > w and (xr - xl) * r / F_PX <= WHEEL_WIDTH_M[1]:
+                x, w = xl, xr - xl + 1
+            if WHEEL_WIDTH_M[0] <= w * r / F_PX <= WHEEL_WIDTH_M[1]:
+                out.append(Blob('victim', x, y, w, yy))
+    return out
+
+
+def wheels_from_hubs(hsv):
+    """Wheels standing up: a round bright-yellow hub over a black tyre. The range comes from the hub's CENTRE, which is
+    always one wheel radius above the floor (walking down to the floor contact gets fooled by the floor's reflection
+    right under the wheel); `bottom` is then set to the row where that range meets the floor."""
+    out = []
+    m = cv2.morphologyEx(cv2.inRange(hsv, *HUB_HSV), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    for c in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        x, y, w, h = cv2.boundingRect(c)
+        # roundish: a far hub whose lower half is shaded comes out up to 3x wider than tall (a flat wheel's rim is
+        # thinner still, and is caught by wheels_from_rims instead)
+        if cv2.contourArea(c) < 25 or not 0.5 <= w / h <= 3.0:
+            continue
+        cols = slice(x + w // 4, max(x + w - w // 4, x + w // 4 + 1))
+        on_tyre = any(np.median(hsv[yy, cols, 2]) < DARK_V for yy in range(y + h, min(H, y + h + max(4, h // 2))))
+        drop = y + h / 2 - HORIZON_Y
+        if not on_tyre or drop < 4:                                 # a hub sits on a black tyre (a row just under)
+            continue
+        r = (CAM_HEIGHT_M - WHEEL_RADIUS_M) * F_PX / drop
+        if r <= MAX_RANGE_M and HUB_WIDTH_M[0] <= w * r / F_PX <= HUB_WIDTH_M[1]:
+            out.append(Blob('victim', x, y, w, min(H - 1, int(round(HORIZON_Y + CAM_HEIGHT_M * F_PX / r)))))
     return out
 
 
 def wheels_from_pucks(hsv):
     """Fallback for a wheel whose rim is not lit: a small dark wide puck whose base meets the floor."""
     out = []
-    m = cv2.morphologyEx(cv2.inRange(hsv, (0, 0, 0), (180, 255, DARK_V - 5)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.morphologyEx(cv2.inRange(hsv, (0, 0, 0), (180, 255, PUCK_V)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     for c in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
         x, y, w, h = cv2.boundingRect(c)
         r = floor_range(y + h)
         if cv2.contourArea(c) < 40 or r is None or not floor_below(hsv, x, w, y + h):
             continue
-        if WHEEL_WIDTH_M[0] <= w * r / F_PX <= WHEEL_WIDTH_M[1] and 0.01 <= h * r / F_PX <= 0.06 and 1.2 <= w / h <= 6:
+        if not (PUCK_WIDTH_M[0] <= w * r / F_PX <= PUCK_WIDTH_M[1] and 0.01 <= h * r / F_PX <= 0.06 and 1.2 <= w / h <= 6):
+            continue
+        # a wheel shows a hint of its yellowish hub just above the tyre; a shadow under a cushion has red/orange
+        # fabric there (measured: wheels 19-69% yellowish, cushion shadows 0-3% yellowish and 74-89% red/orange)
+        band = hsv[max(0, y - 6):y, x:x + w].reshape(-1, 3)
+        yellowish = ((band[:, 0] >= 18) & (band[:, 0] <= 40) & (band[:, 1] >= 30) & (band[:, 2] >= 40)).mean()
+        warm = (((band[:, 0] <= 12) | (band[:, 0] >= 165)) & (band[:, 1] >= 60)).mean()
+        if yellowish >= 0.12 and warm < 0.5:
             out.append(Blob('victim', x, y, w, y + h))
     return out
 
 
 def find_fire(hsv):
-    """The largest tan blob standing on the floor (its base below the horizon - curtains and chairs end above it);
-    its (x, w) are the BASE's ends (the bottom 12 rows). No 'bright floor just below' test here: the box casts a
-    shadow and a reflection on the glossy floor right under its base."""
-    m = cv2.inRange(hsv, *TAN_HSV)
-    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    """The largest tan or red blob standing on the floor. Glare off the box's plastic wrap is not tan, so the blob can end
+    well above the box's real base: from the blob's bottom, walk down through whatever is not floor (glare, the box's
+    shadow) to the first bright floor row - that is the base. Its width (the blob's widest row in its lower half) must
+    be box-sized; its two ends are the base's ends."""
     best = None
+    for ranges in FIRE_MASKS.values():
+        m = np.zeros(hsv.shape[:2], np.uint8)
+        for lo, hi in ranges:
+            m |= cv2.inRange(hsv, lo, hi)
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+        best = _best_fire(hsv, cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8)), best)
+    return [best[1]] if best else []
+
+
+def _best_fire(hsv, m, best):
+    """The biggest box-sized blob of mask m standing on the floor, if bigger than `best` (area, Blob)."""
     for c in cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
         x, y, w, h = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        if area < FIRE_MIN_AREA or floor_range(y + h) is None:
+        if area < FIRE_MIN_AREA:
             continue
-        base = c[c[:, 0, 1] >= y + h - 12][:, 0, 0]
-        if (base.max() - base.min()) * floor_range(y + h) / F_PX < FIRE_MIN_WIDTH_M:   # a tan scrap, not the box
+        blob = np.zeros(m.shape, np.uint8)
+        cv2.drawContours(blob, [c], -1, 255, -1)
+        lower = blob[y + h // 2:y + h, x:x + w] > 0
+        row = int(np.argmax(lower.sum(axis=1)))                     # the widest row in the lower half
+        cols = np.flatnonzero(lower[row])
+        xl, xr = x + int(cols.min()), x + int(cols.max())
+        bottom, mid = y + h, slice(xl + (xr - xl) // 4, max(xr - (xr - xl) // 4, xl + (xr - xl) // 4 + 1))
+        while bottom < H - 1 and bottom - (y + h) < 60 and np.median(hsv[bottom, mid, 2]) < FLOOR_V:
+            bottom += 1                                             # down through glare and shadow to the floor
+        r = floor_range(bottom)
+        if r is None or (xr - xl) * r / F_PX < FIRE_MIN_WIDTH_M:     # in the air, or a tan scrap
             continue
         if best is None or area > best[0]:
-            best = (area, Blob('fire', int(base.min()), y, int(base.max() - base.min()) + 1, y + h))
-    return [best[1]] if best else []
+            best = (area, Blob('fire', xl, y, xr - xl + 1, bottom))
+    return best
 
 
 def detect(bgr):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    wheels = wheels_from_rims(hsv)
-    for p in wheels_from_pucks(hsv):                                # fallback pucks not already found by their rim
+    wheels = wheels_from_hubs(hsv) + wheels_from_rims(hsv)
+    for p in wheels_from_pucks(hsv):                                # fallback pucks not already found otherwise
         if all(p.x + p.w < q.x or q.x + q.w < p.x for q in wheels):
             wheels.append(p)
     return find_fire(hsv) + wheels
@@ -442,7 +512,8 @@ def build_scene(frames, pose):
     fire = {'a', 'b' (its base's two ends), 'x', 'y' (the base's middle), 'r', 'bearing'} or None.
     victims = [{'x', 'y', 'r', 'bearing', 'd' (to the fire's base edge, same-photo median), 'n'}], each seen in most
     photos (a one-off speck is noise). Victims are told apart by bearing: two blobs in one photo are two victims."""
-    majority = len(frames) // 2 + 1
+    majority = len(frames) // 2 + 1                                 # the fire: most photos
+    enough = max(2, len(frames) // 3)                               # a victim: a third (a far hub flickers)
     fire_obs, victim_obs = [], []                                   # victim_obs: (frame, Blob, map point)
     for i, blobs in enumerate(frames):
         for b in blobs:
@@ -470,7 +541,7 @@ def build_scene(frames, pose):
             groups.append([o])
     victims = []
     for g in groups:
-        if len(g) < majority:
+        if len(g) < enough:
             continue
         v = {'x': statistics.median(m[2][0] for m in g), 'y': statistics.median(m[2][1] for m in g),
              'r': statistics.median(m[1].range for m in g), 'bearing': statistics.median(m[1].bearing for m in g),
@@ -896,7 +967,7 @@ def mission(nav, drive=True):
             DASH.set(target=None, path=[])
             return
         if fire:
-            DASH.think(f'Fire (the box) {fire["r"]:.2f} m ahead, {abs(math.degrees(fire["bearing"])):.0f} deg '
+            DASH.think(f'Fire {fire["r"]:.2f} m ahead, {abs(math.degrees(fire["bearing"])):.0f} deg '
                        f'{"left" if fire["bearing"] > 0 else "right"}. I see {len(victims)} '
                        f'victim{"s" * (len(victims) != 1)}:')
             for v in order:

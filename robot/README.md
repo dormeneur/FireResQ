@@ -49,13 +49,16 @@ the victims with their rank, the route and the robot's trail (top right), what i
 
 ## How it sees
 
-In this room's light, colour alone cannot separate things: the box, the wheels' yellow, a chair and the curtain all
-read as dull tan/olive. What stands out is the bright floor (V 160–180), so:
+Measured in this room (dim light, bright glossy floor V 160–180). The fire and the wheels can be either of the
+setups used so far:
 
-- **Victim** = a wheel lying flat: a thin pale-yellow rim directly on top of a near-black tyre band, which ends on
-  bright floor. Its real width must be wheel-sized. Fallback: a small dark puck sitting on the floor.
-- **Fire** = the largest tan blob whose base stands on the floor. Only its base counts (a chair behind the box merges
-  into the blob higher up).
+- **Fire:** the largest **tan** (the cardboard box) or **red** (the red bag) blob whose base stands on the floor, at
+  least 20 cm wide. Its base is found by walking down through glare and shadow to the floor. The dimmer curtain and
+  chair and the orange cushion stay out.
+- **Victim, standing wheel:** a round bright-yellow hub over a black tyre. Its range comes from the hub's centre,
+  which is always 3.25 cm above the floor.
+- **Victim, flat wheel:** a thin pale-yellow rim on a black tyre band that ends on the floor. Fallback: a truly black
+  wheel-sized puck with a hint of yellow hub above it. A shadow under the cushion has red/orange above it instead.
 
 **Depth.** The camera is 10 cm above a flat floor, looking level, so the horizon is a fixed image row. Where an object
 meets the floor *N* pixels below the horizon it is `0.10 × focal length / N` metres away; the pixel column gives its
