@@ -101,9 +101,12 @@ wb.TRIM = tuple(STRONG_RATIO if m + 1 in STRONG_MOTORS else 1.0 for m in range(4
 SPIN_POWER = 255
 SPINS = {True: (wb.drive_powers(-SPIN_POWER, SPIN_POWER),) * 2,      # LEFT: left side back, right side forward
          False: (wb.drive_powers(SPIN_POWER, -SPIN_POWER),) * 2}     # RIGHT: left side forward, right side back
-SPIN_MAX_S = 1.0                         # longest single spin before stopping to let the camera check the heading
+SPIN_MAX_S = 1.0                         # longest single spin pulse
+SPIN_MIN_S = 0.15                        # shortest: a skid spin needs this long to break the tyres loose
+SPIN_RATE_DPS = 26.0                     # measured 2026-10-22: a 1 s spin at full power turned 26 deg either way.
+#                                          Only the starting guess - every pulse re-measures it
 TURN_TOL_DEG = 3.0
-TURN_LEAD_DEG = 4.0                      # stop an arc this early: the camera reports ~1 frame late and the robot coasts
+SPIN_AIM = 0.8                           # aim each pulse at this fraction of what is left (then measure, add more)
 STALL_DEG = 1.0                          # an arc that turned less than this did not move the robot
 MAX_STALLS = 6
 MAX_SPINS = 24                           # give up a turn after this many spins (it is oscillating or stuck)
@@ -128,7 +131,7 @@ OBSTACLE_CLEAR_M = 0.25                  # ...and from an obstacle the sonar fou
 MAX_REROUTES = 3
 FIRE_STOP_M = 0.15                       # the fire straight ahead, this close and nearer than the target: stop
 HOP_M = 0.20                             # homing: drive at most this far between still pictures
-HOP_TURN_DEG = 8                         # ...and turn to face the victim first if it is further off-centre than this
+CENTER_TOL_DEG = 4                       # ...and only once the victim is within this of the picture's centre
 MAX_HOPS = 40
 TRACK_GATE_DEG = 12                      # victims look alike: a tracked blob must stay this close to where it was
 ACQUIRE_GATE_DEG = 25                    # ...and this close to the map's prediction when homing starts
@@ -555,6 +558,7 @@ class Nav:
         self.yaw0 = cam.yaw
         self.obstacle = None
         self.dead = False
+        self.spin_rate = SPIN_RATE_DPS                              # deg/s, learned from every spin
 
     @property
     def th(self):
@@ -583,47 +587,43 @@ class Nav:
         self.y += dist * math.sin(self.th)
 
     def turn_to(self, target, state='turning'):
-        """SKID turn (spin on the spot) until the camera-measured heading is within TURN_TOL_DEG of `target` (rad).
+        """SKID-spin until the camera-measured heading is within TURN_TOL_DEG of `target` (rad). Pulse, STOP, let the
+        camera measure what the robot actually turned (a skid on the tile turns it less than commanded), learn the
+        rate, pulse again for what is left. Each pulse aims a little short so the next one finishes the turn.
         False if it will not turn (self.dead is then set)."""
-        tol, lead = math.radians(TURN_TOL_DEG), math.radians(TURN_LEAD_DEG)
-        if abs(wrap(target - self.th)) <= tol:
+        tol = math.radians(TURN_TOL_DEG)
+        err = wrap(target - self.th)
+        if abs(err) <= tol:
             return True
-        DASH.say(f'Turning {math.degrees(wrap(target - self.th)):+.0f} deg (skid spin)')
-        fwd, stalls = True, 0
+        DASH.say(f'Turning {math.degrees(err):+.0f} deg (skid spin)')
+        stalls = 0
         for _ in range(MAX_SPINS):
             err = wrap(target - self.th)
             if abs(err) <= tol or STOP_EVENT.is_set():
                 break
-            left = err > 0
-            powers = SPINS[left][0 if fwd else 1]
-            th0, t0 = self.th, time.time()
-            while time.time() - t0 < SPIN_MAX_S and not STOP_EVENT.is_set():
-                self.robot.drive(powers)
-                time.sleep(CYCLE_S)
-                e = wrap(target - self.th)                          # a spin turns on the spot: no advance
-                if abs(e) <= lead or (e > 0) != left:              # there (allowing for lag), or crossed over
-                    break
-                STATUS.state = f'{state}: {math.degrees(e):+.0f} deg to go'
-            self.robot.drive(wb.STOP)
-            self.pause(0.25, state)                                 # let the camera catch up before judging
+            t = max(SPIN_MIN_S, min(SPIN_MAX_S, SPIN_AIM * abs(math.degrees(err)) / self.spin_rate))
+            th0 = self.th
+            hold(self.robot, STATUS, SPINS[err > 0][0], t, f'{state}: {math.degrees(err):+.0f} deg to go')
+            self.pause(0.3, state)                                  # stopped: let the camera catch up, then judge
             self.moved()
-            if abs(wrap(self.th - th0)) < math.radians(STALL_DEG):
+            turned = abs(math.degrees(wrap(self.th - th0)))
+            if turned < STALL_DEG:
                 stalls += 1
                 if stalls >= MAX_STALLS:
                     DASH.say('The spins are not turning the robot - stopping (motor switch off? battery? stuck?)')
                     self.dead = True
                     return False
-                DASH.say('That spin did not turn the robot - trying again')
-                self.pause(1.0)
-            else:
-                stalls = 0
-            fwd = not fwd
+                self.spin_rate = max(5.0, self.spin_rate * 0.7)    # it skidded: the next pulse is longer
+                continue
+            stalls = 0
+            self.spin_rate = 0.5 * self.spin_rate + 0.5 * turned / t
         return abs(wrap(target - self.th)) <= tol * 1.5
 
-    def leg(self, dist, heading, backward=False, label='', quiet=False, checks=True):
+    def leg(self, dist, heading, backward=False, label='', quiet=False, checks=True, obstacle_cm=OBSTACLE_CM):
         """Drive `dist` m with the robot FACING `heading`, forward or in reverse, holding that heading with the camera.
         Forward legs stop for an obstacle or the fire close ahead (unless checks=False: the final touch, next to the
-        box). True if the whole distance was covered."""
+        box). obstacle_cm: the sonar distance that counts as an obstacle (homing passes "nearer than the victim").
+        True if the whole distance was covered."""
         self.obstacle = None
         if not self.turn_to(heading, f'lining up for {label}') and self.dead:     # a few degrees off is fine: the
             return False                                                          # leg holds the heading anyway
@@ -651,7 +651,7 @@ class Nav:
                     DASH.say(f'FIRE {fire_ahead[0].range:.2f} m straight ahead - stopped the leg')
                     return False
                 cm = self.robot.ping()
-                if cm is not None and cm < OBSTACLE_CM:
+                if cm is not None and cm < obstacle_cm:
                     r = cm / 100 + 0.08                             # the sonar sits ~8 cm behind the robot's nose
                     now = time.time()
                     self._advance(CRUISE_MPS * (now - last))
@@ -734,13 +734,15 @@ def relocalise(nav, fire):
 
 
 def home_on(nav, name, bearing, rng):
-    """Stop-and-go homing onto the victim the map predicts at (bearing, rng) from here: look at a STILL picture (in
-    this light a moving camera blurs the thin yellow rim away), turn to face the victim if it is off to one side, drive
-    a short hop towards it, repeat. When its floor contact nears the bottom of the image it is right in front: creep
-    TOUCH_CREEP_M blind to touch it. True when touched; False if it is lost or an obstacle/the fire is in the way."""
+    """CENTRE, THEN GO, on still pictures (in this light a moving camera blurs the thin yellow rim away): find the
+    victim, and if it is more than CENTER_TOL_DEG off the picture's centre, spin towards it and look again (a skid that
+    turned too little or too much is seen on the next picture and corrected); only when it is centred drive a hop
+    straight at it, then repeat. When its floor contact nears the bottom of the picture it is right in front: creep
+    TOUCH_CREEP_M blind to touch it. The first lock goes to the blob that best fits the map's (bearing, rng); after
+    that the victim is tracked by bearing. True when touched; False if lost or blocked by something nearer than it."""
     nav.robot.aim(SONAR_CENTER_DEG)
     nav.obstacle = None
-    track, gate, misses = bearing, math.radians(ACQUIRE_GATE_DEG), 0
+    track, gate, misses, locked = bearing, math.radians(ACQUIRE_GATE_DEG), 0, False
     for _ in range(MAX_HOPS):
         if STOP_EVENT.is_set():
             return False
@@ -751,25 +753,28 @@ def home_on(nav, name, bearing, rng):
             if misses >= 3:
                 DASH.say(f'Lost sight of victim {name}')
                 return False
+            gate = math.radians(ACQUIRE_GATE_DEG)                    # a turn overshot? search wider round the track
             continue
         misses = 0
-        b = (min(mine, key=lambda b: (math.degrees(b.bearing - bearing) / 3) ** 2 + ((b.range - rng) / 0.15) ** 2)
-             if gate > math.radians(TRACK_GATE_DEG) else min(mine, key=lambda b: abs(b.bearing - track)))
+        b = (min(mine, key=lambda b: abs(b.bearing - track)) if locked else
+             min(mine, key=lambda b: (math.degrees(b.bearing - bearing) / 3) ** 2 + ((b.range - rng) / 0.15) ** 2))
+        locked = True
         STATUS.state = f'homing on victim {name}: {b.label()}'
         if b.bottom >= H * CLOSE_FRAC:
             DASH.say(f'Victim {name} is right in front - creeping {TOUCH_CREEP_M * 100:.0f} cm to touch it')
             nav.leg(TOUCH_CREEP_M, nav.th, label=f'victim {name}', quiet=True, checks=False)
             nav.pause(0.5, f'touching victim {name}')
             return True
-        if abs(b.bearing) > math.radians(HOP_TURN_DEG):              # off to one side: face it first
-            nav.turn_to(wrap(nav.th + b.bearing), f'facing victim {name}')
+        if abs(b.bearing) > math.radians(CENTER_TOL_DEG):           # not centred: turn, then look again
+            nav.turn_to(wrap(nav.th + b.bearing), f'centring victim {name}')
             track, gate = 0.0, math.radians(TRACK_GATE_DEG)
             continue
         hop = max(0.05, min(HOP_M, 0.6 * (b.range - reach_distance())))
-        if not nav.leg(hop, wrap(nav.th + b.bearing), label=f'victim {name}', quiet=True):
-            if nav.obstacle is not None:
-                return False
-        track, gate = 0.0, math.radians(TRACK_GATE_DEG)              # it should be dead ahead now
+        # only something clearly NEARER than the victim is an obstacle: a victim beside the box has the box behind it
+        limit = min(OBSTACLE_CM, max(5, int((b.range - 0.10) * 100)))
+        if not nav.leg(hop, nav.th, label=f'victim {name}', quiet=True, obstacle_cm=limit) and nav.obstacle:
+            return False
+        track, gate = 0.0, math.radians(TRACK_GATE_DEG)              # it should still be dead ahead
     DASH.say(f'Victim {name}: too many hops - giving up')
     return False
 
@@ -1059,8 +1064,51 @@ def selftest():
     # the strong motors (M2, M4) get less power than the others for the same command
     fwd = wb.drive_powers(200, 200)
     assert abs(fwd[1]) < abs(fwd[0]) and abs(fwd[3]) < abs(fwd[2]), fwd
+    # turning: pulse, measure, add more - converges even when skidding loses half of every pulse
+    for efficiency in (1.0, 0.5):
+        robot, cam = FakeRobot(efficiency), None
+        cam = robot.cam
+        nav = Nav(robot, cam)
+        for target in (math.radians(30), math.radians(-12), math.radians(5)):
+            assert nav.turn_to(target), (efficiency, math.degrees(target), math.degrees(nav.th))
+            assert abs(math.degrees(wrap(nav.th - target))) <= TURN_TOL_DEG * 1.5, (efficiency, math.degrees(nav.th))
     json.loads(DASH.json())
     print('selftest: OK')
+
+
+class FakeRobot:
+    """For the self-test: a robot whose skid spins turn it at 26 deg/s x `efficiency` (the rest lost to skidding),
+    after a 50 ms break-away, and a camera that reports that heading."""
+
+    def __init__(self, efficiency):
+        self.efficiency, self.cmd, self.t = efficiency, wb.STOP, time.time()
+        robot = self
+
+        class Cam:
+            @property
+            def yaw(self):
+                robot._integrate()
+                return robot._yaw
+        self.cam, self._yaw, self._since = Cam(), 0.0, time.time()
+
+    def _integrate(self):
+        now = time.time()
+        rate = {SPINS[True][0]: 1, SPINS[False][0]: -1}.get(tuple(self.cmd), 0) * math.radians(SPIN_RATE_DPS)
+        if now - self._since > 0.05:                                # past the break-away
+            self._yaw += rate * self.efficiency * (now - max(self.t, self._since + 0.05))
+        self.t = now
+
+    def drive(self, powers):
+        self._integrate()
+        if tuple(powers) != tuple(self.cmd):
+            self._since = time.time()
+        self.cmd = tuple(powers)
+
+    def aim(self, deg):
+        pass
+
+    def ping(self):
+        return None
 
 
 def stop_other_copies():
