@@ -1068,6 +1068,41 @@ def selftest():
     print('selftest: OK')
 
 
+def stop_other_copies():
+    """Only one copy can hold the camera and the Uno: stop any earlier rescue_bot.py (a forgotten --plan or --view,
+    say) before starting."""
+    import os
+    me, others = os.getpid(), []
+    for pid in filter(str.isdigit, os.listdir('/proc')):
+        try:
+            argv = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        # only a PYTHON process running this script - not the shell or `timeout` that launched one (their command
+        # lines mention rescue_bot.py too)
+        if int(pid) != me and Path(argv[0].decode(errors='replace')).name.startswith('python') \
+                and any(a.endswith(b'rescue_bot.py') for a in argv[1:]):
+            others.append(int(pid))
+    if not others:
+        return
+    print(f'Stopping the copy of rescue_bot.py that is already running ({", ".join(map(str, others))})...', flush=True)
+    for p in others:
+        try:
+            os.kill(p, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+    for _ in range(50):                                             # up to 5 s to let go of the camera
+        if not any(os.path.exists(f'/proc/{p}') for p in others):
+            return
+        time.sleep(0.1)
+    for p in others:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    time.sleep(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     for flag in ('--view', '--plan', '--sonar-cal', '--selftest'):
@@ -1079,11 +1114,17 @@ def main():
         return
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *_: STOP_EVENT.set())
+    stop_other_copies()
     cam = Camera()
     robot = None
     try:
         if not args.sonar_cal:
-            cam.start()
+            try:
+                cam.start()
+            except RuntimeError:
+                print('\nThe camera is busy: another program has it. Usually the drone project - run\n'
+                      '    sudo systemctl stop targetfire\nand start this again.')
+                return
         if args.calibrate_horizon:
             calibrate_horizon(cam, args.calibrate_horizon)
             return
