@@ -1,0 +1,71 @@
+<?xml version="1.0" ?>
+<!--
+  Base world for the quick demo (./run_sim.sh): same physics and plugins as empty_world.sdf, nicer to look at.
+  Colours stay unsaturated (S <= 18) so nothing but the fire, victims and safe zone can match the perception masks
+  (the Phase 3 colour contract). No <sky>: a blue sky would sit inside the victim hue band.
+-->
+<sdf version="1.9">
+  <world name="demo_world">
+
+    <physics name="4ms" type="ignored">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <scene>
+      <ambient>0.45 0.45 0.45 1</ambient>
+      <background>0.16 0.17 0.18 1</background>
+      <shadows>true</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.82 1</diffuse>
+      <specular>0.25 0.25 0.25 1</specular>
+      <direction>-0.4 0.3 -0.9</direction>
+    </light>
+    <light type="directional" name="fill">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.25 0.25 0.27 1</diffuse>
+      <specular>0 0 0 1</specular>
+      <direction>0.5 -0.4 -0.7</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material>
+            <ambient>0.08 0.08 0.09 1</ambient>
+            <diffuse>0.12 0.12 0.13 1</diffuse>
+          </material>
+        </visual>
+        <!-- The arena floor: a lighter stage under the quick demo's 3 x 3 m arena (make_scenario.py). -->
+        <visual name="arena_floor">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry><plane><normal>0 0 1</normal><size>3.16 3.16</size></plane></geometry>
+          <material>
+            <ambient>0.40 0.39 0.38 1</ambient>
+            <diffuse>0.58 0.57 0.55 1</diffuse>
+            <specular>0.08 0.08 0.08 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

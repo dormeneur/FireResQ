@@ -38,12 +38,27 @@ class ScenarioPathOracle:
             return PathInfo.unreachable('goal occupied or outside the map')
         if not self._inside(s) or self.blocked[s[0]][s[1]]:
             return PathInfo.unknown('start occupied or outside the map')
+        d, _ = self._search(s, g)
+        return PathInfo.unreachable('no path') if d is None else PathInfo.reachable(d)
+
+    def path(self, start, goal):
+        """The A* path start -> goal as a list of world points (cell centres), or None."""
+        s, g = self._cell(start), self._cell(goal)
+        if not (self._inside(s) and self._inside(g)) or self.blocked[s[0]][s[1]] or self.blocked[g[0]][g[1]]:
+            return None
+        _, cells = self._search(s, g)
+        return None if cells is None else [self._centre(*c) for c in cells]
+
+    def _search(self, s, g):
         h = lambda c: self.res * (max(abs(c[0] - g[0]), abs(c[1] - g[1])) + (math.sqrt(2) - 1) * min(abs(c[0] - g[0]), abs(c[1] - g[1])))  # noqa: E731
-        best, heap = {s: 0.0}, [(h(s), 0.0, s)]
+        best, heap, came = {s: 0.0}, [(h(s), 0.0, s)], {}
         while heap:
             _, d, c = heapq.heappop(heap)
             if c == g:
-                return PathInfo.reachable(d)
+                cells = [c]
+                while cells[-1] in came:
+                    cells.append(came[cells[-1]])
+                return d, cells[::-1]
             if d > best.get(c, math.inf):
                 continue
             for di in (-1, 0, 1):
@@ -57,6 +72,6 @@ class ScenarioPathOracle:
                         continue                                          # no cutting corners
                     nd = d + self.res * (math.sqrt(2) if di and dj else 1.0)
                     if nd < best.get(n, math.inf):
-                        best[n] = nd
+                        best[n], came[n] = nd, c
                         heapq.heappush(heap, (nd + h(n), nd, n))
-        return PathInfo.unreachable('no path')
+        return None, None

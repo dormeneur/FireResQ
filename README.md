@@ -16,6 +16,16 @@ Perception
 → Reassessment
 ```
 
+## Run the demo (simulation, one command)
+```bash
+./run_demo.sh                    # default arena: SLAM map, then the whole rescue mission unattended (~10-15 min)
+./run_demo.sh --random 7         # a NEW layout (fire, victims, obstacles) from seed 7, validated winnable
+./run_demo.sh --gui              # watch it in Gazebo;   --model nearest   runs the nearest-first baseline
+```
+Everything lands in `results/<scenario>_<model>_<time>/`: `report.md` (outcome, rescue order, every decision with its factors,
+ground-truth check), `mission.png`, the SLAM map, decisions, world state, trajectory and logs. Rerun a layout with
+`--scenario results/<run>/scenario.yaml`. Options: `python3 tests/sim/experiments/demo_mission.py --help`.
+
 ## Start here
 - [HOW_TO_RUN_THE_COMPLETE_SIMULATION.md](HOW_TO_RUN_THE_COMPLETE_SIMULATION.md): install, build and run the full rescue mission in simulation.
 - [HOW_TO_MAKE_THE_COMPLETE_ROBOT.md](HOW_TO_MAKE_THE_COMPLETE_ROBOT.md): wire the real robot, run the bench test and the camera demo, and the road to full autonomy.

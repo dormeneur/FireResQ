@@ -35,7 +35,7 @@ def _setup(context, *args, **kwargs):
 
     world = write_world(
         scenario, Path(tempfile.gettempdir()) / 'fire_resq_worlds' / f'{scenario.name}.sdf',
-        overview_camera=overview)
+        overview_camera=overview, base_world=LaunchConfiguration('base_world').perform(context) or None)
 
     magnet = LaunchConfiguration('magnet').perform(context).lower() == 'true'
     s = scenario.robot_start
@@ -93,6 +93,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('scenario', default_value='default',
                               description='Scenario name (config/scenarios/<name>.yaml) or path.'),
+        DeclareLaunchArgument('base_world', default_value='',
+                              description='Base world SDF the scenario is injected into (empty = worlds/empty_world.sdf).'),
         DeclareLaunchArgument('gui', default_value='true',
                               description='Gazebo GUI. false = server only (headless).'),
         DeclareLaunchArgument('use_rviz', default_value='false', description='Also launch RViz2.'),

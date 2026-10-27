@@ -76,6 +76,17 @@ python3 -m pytest src/fire_resq_cognition/test/test_priority.py -k victim_scorin
 ### Running things
 
 ```bash
+# THE QUICK DEMO (~2 min, Gazebo window): random 3x3 m arena, one fire, three victims; rescued closest-to-fire first.
+# quick_demo/: make_scenario.py (sim side, layouts guaranteed clear for straight drives) + rescue.py (robot side: real
+# perception in `odom`, odometry driving, the magnet; NO Nav2/SLAM/cognition). Verified against Gazebo truth on seeds 1-5.
+./run_sim.sh                        # new random layout (seed printed); ./run_sim.sh 42 repeats one; HEADLESS=1 for no window
+
+# THE DEMO: SLAM mapping lap + the full unattended mission + a results/ folder (report.md, mission.png, map, decisions, logs).
+# Sources ROS and the workspace itself. The mapping lap is scripted from the scenario (evaluation tooling, like the tests).
+./run_demo.sh                       # default scenario
+./run_demo.sh --random 7            # generated layout (default arena/safe zone/start; fire, victims, obstacles move)
+./run_demo.sh --gui --model nearest --map results/<run>/map/arena.yaml --scenario results/<run>/scenario.yaml
+
 # robot description alone — no simulator. RViz + full TF tree.
 ros2 launch fire_resq_description display.launch.py
 

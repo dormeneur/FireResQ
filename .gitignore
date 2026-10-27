@@ -22,3 +22,6 @@ venv/
 .idea/
 *.swp
 .DS_Store
+
+# demo outputs (run_demo.sh)
+results/

@@ -496,10 +496,10 @@ def build_world_sdf(sc: Scenario, base_world: Optional[Path] = None,
     return '<?xml version="1.0"?>\n' + header + ET.tostring(sdf, encoding='unicode') + '\n'
 
 
-def write_world(sc: Scenario, out_path, overview_camera: bool = False) -> Path:
+def write_world(sc: Scenario, out_path, overview_camera: bool = False, base_world: Optional[Path] = None) -> Path:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(build_world_sdf(sc, overview_camera=overview_camera), encoding='utf-8')
+    out.write_text(build_world_sdf(sc, base_world=base_world, overview_camera=overview_camera), encoding='utf-8')
     return out
 
 

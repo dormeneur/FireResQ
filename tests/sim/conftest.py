@@ -165,21 +165,28 @@ def arena_map_yaml(_ros, scenario):
     fixed = os.environ.get('FIRE_RESQ_TEST_MAP')      # reproducible experiments: reuse an already-saved map (a .yaml path)
     if fixed:
         return Path(fixed)
-    env = _bring_up(['navigation:=false'], depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True)
+    return map_arena(scenario, LAP_WORLD, Path(tempfile.mkdtemp(prefix='fire_resq_map_')) / 'arena')
+
+
+def map_arena(scenario, route_world, out_stem, extra=(), on_waypoint=None):
+    """Drive `route_world` (WORLD points, straight legs) under scan-matching SLAM, turn back to the start heading, save the map
+    as `out_stem`.{yaml,pgm} and tear that simulation down completely. Returns the .yaml path."""
+    env = _bring_up(['navigation:=false', *extra], depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True)
     try:
         bot = env.bot
-        for wx, wy in LAP_WORLD:
+        for i, (wx, wy) in enumerate(route_world):
             bot.go_to(*scenario.world_to_odom(wx, wy))
+            if on_waypoint:
+                on_waypoint(i, env)
         bot.turn_to(0.0, settle=1.0)          # the lap ends AT the start but facing the way it drove
         bot.spin_wall(3.0)
-        out = Path(tempfile.mkdtemp(prefix='fire_resq_map_')) / 'arena'
-        r = subprocess.run(['ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', str(out), '--ros-args',
+        r = subprocess.run(['ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', str(out_stem), '--ros-args',
                             '-p', 'save_map_timeout:=15000.0', '-p', 'use_sim_time:=true'],
                            capture_output=True, text=True, timeout=60)
-        assert Path(str(out) + '.yaml').exists(), r.stdout + r.stderr
+        assert Path(str(out_stem) + '.yaml').exists(), r.stdout + r.stderr
     finally:
         _teardown(env)
-    return Path(str(out) + '.yaml')
+    return Path(str(out_stem) + '.yaml')
 
 
 def _amcl_bring_up(map_yaml, navigation, extra=(), **flags):
@@ -225,7 +232,7 @@ def _amcl_bring_up(map_yaml, navigation, extra=(), **flags):
         raise
 
 
-def mission_bring_up(map_yaml, extra=()):
+def mission_bring_up(map_yaml, extra=(), victims=('victim_1', 'victim_2', 'victim_3')):
     """The WHOLE mission stack from a cold start: arena_nav + AMCL on the saved map + Nav2 + perception (depth) + world model +
     cognition + the magnet + the rescue node, autostarted. Unlike _amcl_bring_up this does NOT publish the start pose: the
     rescue node does (a cold start must not need a test to hold its hand), and the mission begins as soon as it is ready."""
@@ -234,7 +241,7 @@ def mission_bring_up(map_yaml, extra=()):
                     depth=True, launch_file='arena_nav.launch.py', scan=True, nav=True, wait_map=False, wait_downstream=False,
                     perception=True, world=True, cognition=True)
     env.tap = MissionTap(env.bot)
-    env.truth = TruthLog(['fire_resq', 'victim_1', 'victim_2', 'victim_3'])
+    env.truth = TruthLog(['fire_resq', *victims])
     return env
 
 
