@@ -50,12 +50,12 @@ SELECT VICTIM
 ```
 
 ### Control
-Simulation uses Gazebo controllers. Physical control uses ROS 2 ↔ ESP32 ↔ motor driver/encoders.
+Simulation uses Gazebo controllers. Physical control uses ROS 2 on the PC ↔ ROS 2 drivers on the robot's Raspberry Pi ↔ Arduino + motor shield ([docs/Hardware.md](docs/Hardware.md)). The physical robot has no encoders.
 
 ### Rescue Actuator
 Expose an electromagnet abstraction. Physical path:
 ```text
-ROS 2 → ESP32 → MOSFET/Relay → Electromagnet
+ROS 2 → Raspberry Pi driver → Arduino → MOSFET/Relay → Electromagnet
 ```
 
 ## 4. Camera Abstraction

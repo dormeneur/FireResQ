@@ -1,0 +1,78 @@
+# FireResQ robot-side drivers (Raspberry Pi 3B): launch/robot.launch.py.
+# Everything marked TODO(hardware) is a PLACEHOLDER until it is measured on the real robot.
+
+camera_node:
+  ros__parameters:
+    device: /dev/video0                 # Logitech C270
+    width: 640                          # 4:3 only: the calibration is scaled, and this camera's 16:9 modes crop
+    height: 480
+    fps: 15.0                           # requested. Measured in a dim room: 7.6 delivered (auto-exposure, see below)
+    frame_id: camera_optical_frame
+    # v4l2-ctl controls applied at start-up ('' = none). Worth trying once the arena lighting is fixed:
+    #   exposure_dynamic_framerate=0     keep the frame rate instead of lengthening exposure in dim light
+    #   white_balance_automatic=0        stop the hues drifting under the colour detector
+    v4l2_controls: ['']
+
+base_node:
+  ros__parameters:
+    port: /dev/ttyUSB0                  # Arduino Uno (CH340) + L293D motor shield
+    cmd_timeout_s: 0.5                  # /cmd_vel silent this long -> stop (the firmware has its own 0.4 s watchdog)
+    send_rate_hz: 10.0                  # must stay well above 1 / 0.4 s or the firmware watchdog trips mid-drive
+
+    # ---- wiring: which shield terminal is which wheel --------------------------------------------
+    # From the maintainer, 2026-10-13: M1, M2 = the FRONT wheels; M3 = back-LEFT, M4 = back-RIGHT.
+    # Seen on the floor the same day: M1 forward + M2 backward turned the robot LEFT, so M1 = front-RIGHT and
+    # M2 = front-LEFT (the front pair is wired the other way round from the back pair). Hence left = M2 + M3,
+    # right = M1 + M4. Every earlier mapping had at least one pair of wheels fighting the turn.
+    # Two earlier guesses that treated M1+M2 and M3+M4 as the two SIDES were wrong: they are the two AXLES, so
+    # "one side backward" was really "one axle backward" and the robot backed away instead of turning.
+    # (`./demo.sh motors`, wheels off the ground, checks all four wheels and their polarity properly.)
+    left_motors: [2, 3]
+    right_motors: [1, 4]
+    motor_signs: [1, 1, 1, 1]           # per terminal M1..M4: -1 if it turns backwards on a positive power
+    front_motors: [1, 2]
+
+    # ---- how a turn ON THE SPOT is made (drive.py TURN_STYLES). Curving while driving is not affected.
+    #   skid           left side backward + right side forward (to turn left): all four wheels work together.
+    #                  With the sides finally right this is the strongest turn the robot has; the two-wheel pivots
+    #                  worked one moment and not the next on four AA cells.     <- in use since 2026-10-13
+    #   pivot_back     the inner side backward, the outer side stopped
+    #   pivot_right    the right side only: backward to turn right, forward to turn left
+    #   pivot_forward  the outer side forward, the inner side stopped
+    #   pivot_rear     only the BACK wheels, in opposite directions (to turn left: back-left backward, back-right
+    #                  forward); the front wheels stopped                       <- the maintainer's choice, 2026-10-13
+    #   pivot_front    only the front wheels, rear stopped
+    #   mixed          LEFT turns as skid (all four wheels). RIGHT turns with the left wheels driving FORWARD and the
+    #                  right wheels stopped: on the floor the right turn "struggled" in every style that runs the
+    #                  right wheels (M1, M4) backward, while driving forward always worked.   <- in use, 2026-10-13
+    #   pivot_split    LEFT turns with the back wheels (as pivot_rear), RIGHT turns with the FRONT wheels (front-left
+    #                  forward, front-right backward). On the floor the back pair turned the robot left perfectly
+    #                  and would not turn it right at all, at full power: M3 forward or M4 backward is weak.
+    # Can be changed while running: the demo dashboard's "Turning style", or
+    #   ros2 param set /base_node turn_style pivot_rear
+    turn_style: skid
+    # Terminals left UNPOWERED in a right turn on the spot. On the floor, 2026-10-13: M2 (front-left) spoiled right
+    # turns, and with only M2 off the turn still struggled, so the maintainer asked for M1 and M4 alone: a right turn
+    # is the two RIGHT wheels (M1, M4) backward, the left wheels off. Left turns use all four.
+    right_turn_idle: [2, 3]
+
+    # ---- drive calibration: there are NO ENCODERS, so these three numbers ARE the odometry ---------
+    # TODO(hardware): full_speed_mps - time a straight 1 m run at power 255 on the arena floor.
+    # TODO(hardware): min_power      - the lowest power at which the robot starts to creep on the arena floor.
+    # TODO(hardware): track_slip_factor - spin 360 deg on the spot, compare with what /odom reported.
+    full_speed_mps: 0.3
+    min_power: 110
+    track_slip_factor: 1.0              # effective track = wheel_separation (parameters.xacro) x this
+
+    odom_rate_hz: 20.0
+    publish_tf: true                    # odom -> base_link, dead reckoning from commanded power
+
+ir_node:
+  ros__parameters:
+    chip: /dev/gpiochip0
+    left_line: 17                       # GPIO17, physical pin 11
+    right_line: 27                      # GPIO27, physical pin 13
+    # TODO(hardware): inferred from one idle reading (2026-10-16), not from a real trigger or a datasheet. If the
+    # dashboard shows "object detected" with nothing in front of a sensor, set this to false and redeploy.
+    active_low: true
+    rate_hz: 20.0

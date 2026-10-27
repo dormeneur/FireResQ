@@ -1,6 +1,12 @@
 # How to make the complete robot
 
-Step by step, from the parts on your desk to the full autonomous rescue. Short on purpose: wherever more detail exists, this page links to it.
+Step by step, from the robot on your desk to the full autonomous rescue. Short on purpose: wherever more detail exists, this page links to it. Rewritten 2026-10-13 for the robot as built ([Hardware.md](Hardware.md)).
+
+```text
+PC ("station")  ── Wi-Fi, ROS 2 ──  Raspberry Pi 3B  ── USB ──  Arduino Uno + L293D motor shield ── 4 motors (4× AA)
+perception, decisions,              camera + motor drivers       base_controller firmware
+navigation, RViz                    └─ USB ── Logitech C270
+```
 
 ---
 
@@ -8,225 +14,150 @@ Step by step, from the parts on your desk to the full autonomous rescue. Short o
 
 | Part of the system | Status |
 | --- | --- |
-| All the "brain" software (perception, world model, decision, mission, Nav2 setup) | ✅ Done. Runs on the laptop, the same as in simulation |
-| ESP32 **bench test** (drive the motors + switch the magnet/LED by typing commands) | ✅ Done: [`src/fire_resq_hardware/firmware/bench_test/bench_test.ino`](src/fire_resq_hardware/firmware/bench_test/bench_test.ino) |
-| ESP32 **robot firmware** + laptop **bridge** (ROS `cmd_vel` → motors, encoders → odometry, magnet commands) | ❌ **Not written yet.** This is Phase 12; see [`src/fire_resq_hardware/fire_resq_hardware/__init__.py`](src/fire_resq_hardware/fire_resq_hardware/__init__.py) |
+| All the "brain" software (perception, world model, decision, mission, Nav2 setup) | ✅ Done; verified in simulation |
+| ROS 2 on both computers, talking over Wi-Fi | ✅ Done (Docker; steps 1–2) |
+| Arduino firmware: per-motor speed, watchdog | ✅ Flashed and tested on the board |
+| Pi drivers: camera → PC, `/cmd_vel` → motors, `/odom` | ✅ Running; tested with the **motors unpowered** |
+| Camera → perception on the PC | ✅ Running (`/fire_resq/detections`); colours and sizes not tuned for real objects yet |
+| Which motor is which wheel; real speeds | ❌ **Your next step** (steps 3–4): needs the batteries in and your eyes |
+| Knowing where the robot is (`map`) | ❌ **No sensor for it yet.** No encoders, no depth camera. Needs a decision: [Hardware.md](Hardware.md) §5 |
+| Picking victims up | ❌ No electromagnet fitted: [Hardware.md](Hardware.md) §6 |
 
-Until Phase 12 exists, the real robot can do **two separate demos**: (1) drive and switch the "magnet" from the keyboard; (2) the laptop camera finds victims and fire. It **cannot run the autonomous mission yet.**
+Until the last two exist the robot can be **driven from the PC** and can **see and place victims and fire relative to itself**. It cannot run the autonomous mission.
 
----
-
-## What you can do TODAY with what you have
-
-You have: ESP32, 2 geared DC motors, motor driver, battery pack, 2WD chassis, RGB camera.
-
-1. **Wire it and run the bench test** (steps 2–4 below). The robot drives forward, back and turns on your commands, and an LED stands in for the electromagnet (ON/OFF).
-2. **Camera demo** (step 5). The laptop sees a blue "victim" and an orange "fire" through your camera and publishes the detections, using the real project perception code.
-
-That is a real partial demo of the low-level control and the perception layer.
+**What it can do autonomously today is the bottle demo** (find coloured bottles, visit each one, live dashboard): one script, `./demo.sh`, explained in [DEMO.md](DEMO.md). `./demo.sh motors` also does step 3 below for you.
 
 ---
 
-## 1. Parts: have vs. still to buy
+## 1. One-time setup
 
-| Part | Have? | Why it's needed |
-| --- | --- | --- |
-| ESP32 dev board, 2WD chassis + caster, 2 geared DC motors, motor driver, battery pack | ✅ | the base |
-| RGB USB camera | ✅ | perception |
-| LED + 220 Ω resistor | buy (cheap) | stands in for the electromagnet now |
-| **Motors with encoders** (or encoder discs + sensors) | ❌ **needed** | odometry. Without encoders the robot cannot know where it is |
-| **Depth camera** (Intel RealSense D435 or similar) | ❌ **needed for autonomy** | mapping (SLAM) and navigation are built on a depth scan; an RGB camera alone does perception only. Why: [CLAUDE.md](CLAUDE.md) → "Navigation" |
-| Low-voltage electromagnet + **logic-level MOSFET module** + **flyback diode** (1N4007) | ❌ later | picking up victims |
-| 5 V buck regulator | ❌ if your battery is > 5 V | clean power for the ESP32 |
-| 3 small victims: **blue**, with a **steel ring/washer** at magnet height | make | targets |
-| An **orange** object | make | the "fire" |
+**PC** (needs Docker; nothing else is installed on the host):
 
-Full list and power rules: [Hardware.md](Hardware.md) §7 and §10.
+```bash
+cd FireResQ
+docker build -f docker/station.Dockerfile -t fire_resq/station .     # ~7 GB, once
+docker/station.sh colcon build --symlink-install                     # builds the workspace inside the container
+```
+
+**Pi** (Raspberry Pi OS; needs Docker and your user in the `docker` group):
+
+```bash
+sudo apt install -y docker.io && sudo usermod -aG docker $USER       # then log out and in
+```
+
+**Arduino** — flash the base firmware (from the PC, with `arduino-cli`; the Uno stays plugged into the Pi):
+
+```bash
+arduino-cli lib install "Adafruit Motor Shield library"
+arduino-cli compile -b arduino:avr:uno --output-dir /tmp/fw src/fire_resq_hardware/firmware/base_controller
+scp /tmp/fw/base_controller.ino.hex pi@<robot-ip>:
+ssh pi@<robot-ip> 'sudo apt install -y avrdude; docker stop fire_resq_robot; \
+    avrdude -p atmega328p -c arduino -P /dev/ttyUSB0 -b 115200 -U flash:w:base_controller.ino.hex:i'
+```
+
+The sketch that was on the Uno before (`fixed_test_movement`, the `F/B/L/R/S` one) is saved byte-for-byte in [`firmware/backup/arduino_original_flash.hex`](../src/fire_resq_hardware/firmware/backup/arduino_original_flash.hex). To go back, flash that file with the same `avrdude` command. **The old Pi scripts (`autonomous.py` …) do not work with the new firmware**: it speaks a different protocol at a different baud rate, on purpose (step 6).
 
 ---
 
-## 2. Build the base
+## 2. Start the robot
 
-1. Mount both motors and wheels, and the caster at the **back**.
-2. Mount the ESP32 and motor driver on top. Keep wires short.
-3. Mount the camera at the **front**, low, looking straight ahead (sim: 5 cm in front of the wheel axle, 5.5 cm above it).
-4. Leave the **front-bottom** free for the electromagnet later. It must not touch the floor.
-5. Measure **wheel radius**, **distance between the two wheel centres** and the camera position. You'll need them for odometry in Phase 12; they go in [`src/fire_resq_description/urdf/parameters.xacro`](src/fire_resq_description/urdf/parameters.xacro) (`wheel_radius`, `wheel_separation`, `camera_x`, `camera_z`). Don't change them yet, because the simulation uses the same file.
+```bash
+# PC: copy the driver packages to the Pi, build them there, start them (first time ~10 min, then ~30 s)
+docker/deploy_robot.sh pi@<robot-ip>
+
+# PC: a shell that talks to the robot
+docker/station.sh
+ros2 topic list                                   # /camera/image_raw/compressed  /cmd_vel  /odom  /tf ...
+ros2 launch fire_resq_hardware station.launch.py  # decoding + robot TF + perception
+```
+
+On the Pi the drivers run in a container: `docker logs -f fire_resq_robot` to watch, `docker stop fire_resq_robot` to stop (do that before using the camera or the Arduino from anything else). It does not start by itself at boot.
+
+**Sim and robot cannot mix.** `docker/station.sh` is ROS domain 42, where the robot lives. `FIRE_RESQ_SIM=1 docker/station.sh` is domain 0, this PC only: run the simulation and the test suite there.
+
+**Checks (measured on this robot, in a dim room):** the camera arrives at 7–8 fps (15 in good light), about 50–60 ms old; `/odom` at 20 Hz.
 
 ---
 
-## 3. Wire it
+## 3. Find out which motor is which wheel
 
-### Motors and driver
+Known: shield terminals **M1, M2 = front motors, M3, M4 = back motors**. Not known: which of each pair is left, and which way each one turns.
 
-| ESP32 pin | L298N pin | TB6612FNG pin | Goes to |
-| --- | --- | --- | --- |
-| GPIO 25 | ENA | PWMA | left motor speed |
-| GPIO 26 | IN1 | AIN1 | left motor direction |
-| GPIO 27 | IN2 | AIN2 | left motor direction |
-| GPIO 14 | ENB | PWMB | right motor speed |
-| GPIO 32 | IN3 | BIN1 | right motor direction |
-| GPIO 33 | IN4 | BIN2 | right motor direction |
-| 3.3 V | — | STBY **and** VCC | TB6612 only: enable + logic power |
-| GND | GND | GND | **common ground (must!)** |
+1. **Lift the wheels off the table.** Put the AA batteries in.
+2. On the Pi:
 
-- Left motor → driver OUT1/OUT2 (L298N) or AO1/AO2 (TB6612). Right motor → OUT3/OUT4 or BO1/BO2.
-- Battery **+** → driver motor supply (L298N `12V`, TB6612 `VM`). Battery **−** → driver GND.
-- **L298N:** remove the ENA/ENB jumpers (the ESP32 drives those pins).
-- **L298N:** leave its `5V` pin unconnected while the ESP32 is powered from USB.
-
-### "Magnet" (LED now)
-
-```
-GPIO 4 ──[220 Ω]──▶|── GND        (LED: long leg toward the resistor)
+```bash
+docker stop fire_resq_robot
+docker run --rm -it --privileged -v /dev:/dev fire_resq/robot ros2 run fire_resq_hardware motor_check
 ```
 
-The on-board LED (GPIO 2) mirrors it.
+It spins one terminal at a time and asks which wheel moved and whether it rolled forward, then prints three lines.
 
-### Later: the real electromagnet (same pin, no code change)
+3. Paste those lines into [`src/fire_resq_hardware/config/robot.yaml`](../src/fire_resq_hardware/config/robot.yaml) (`left_motors`, `right_motors`, `motor_signs`) and run `docker/deploy_robot.sh` again.
 
+---
+
+## 4. Drive it and measure it
+
+Still on blocks for the first try:
+
+```bash
+docker/station.sh ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
-GPIO 4 ─▶ MOSFET module SIG          MOSFET module GND ─ common GND
-Battery + ─▶ magnet (+)   magnet (−) ─▶ MOSFET module OUT/DRAIN
-1N4007 across the magnet: stripe (cathode) on the magnet (+) side
-```
 
-Never drive the magnet straight from a GPIO pin. Why: [Hardware.md](Hardware.md) §6.
+`i` forward, `,` back, `j`/`l` turn, `k` stop. Let go and it stops within about 0.6 s; kill the driver or pull the USB cable and the firmware stops the motors within 0.4 s.
 
-### Later: encoders (pins reserved, Phase 12)
+Then on the floor, measure the three numbers that stand in for encoders (all in `robot.yaml`, each marked `TODO(hardware)`):
 
-| Encoder | ESP32 pin |
+| Number | How |
 | --- | --- |
-| Left A / B | GPIO 34 / 35 |
-| Right A / B | GPIO 36 (VP) / 39 (VN) |
-| Encoder VCC / GND | 3.3 V / GND |
+| `min_power` | Lower it until a forward command no longer moves the robot; use a bit more than that |
+| `full_speed_mps` | Time a straight 1 m run at full speed |
+| `track_slip_factor` | Command one full turn on the spot; scale by how far `/odom` says it turned vs. how far it really did |
 
-GPIO 34–39 have no internal pull-ups: add 10 kΩ from each to 3.3 V, unless your encoder board already has them.
+Also measure the wheel separation and where the camera sits (forward of the wheel centre, height above the floor) for [`parameters.xacro`](../src/fire_resq_description/urdf/parameters.xacro). **Ask first:** that file is shared with the simulated robot ([Hardware.md](Hardware.md) §13).
 
-### Power
-
-- **Bench testing:** power the ESP32 from the laptop USB and the motors from the battery. Grounds connected.
-- **Untethered later:** battery → 5 V buck regulator → ESP32 `5V`/`VIN` pin. Never feed USB and VIN at the same time.
+If the robot cannot turn on the spot at all, that is the motors, not the software: four AAs through an L293D leave little torque for skid steering.
 
 ---
 
-## 4. Flash the bench test and drive
+## 5. Make it see your victims and fire
 
-1. Install **Arduino IDE 2** (on Windows, simplest).
-2. Add the ESP32 boards: *File → Preferences → Additional boards manager URLs* →
-   `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
-   then *Tools → Board → Boards Manager* → install **esp32 by Espressif**.
-3. Open [`src/fire_resq_hardware/firmware/bench_test/bench_test.ino`](src/fire_resq_hardware/firmware/bench_test/bench_test.ino).
-4. *Tools → Board* → **ESP32 Dev Module**; *Tools → Port* → your ESP32 → **Upload**.
-   (No port? Install the CP210x or CH340 USB driver, whichever matches the chip on your board. Still failing? Hold **BOOT** while it says "Connecting…".)
-5. **Lift the wheels off the table**, open *Serial Monitor* (115200 baud, "Newline"), and type:
-
-| Type | Does |
-| --- | --- |
-| `f` / `b` | forward / backward for 1 s |
-| `l` / `r` | spin left / right for 1 s |
-| `s` | stop |
-| `1`…`9` | speed |
-| `m1` / `m0` | magnet (LED) ON / OFF |
-
-**Checks:**
-- `f` turns both wheels forward. If one turns backwards, set `L_DIR` or `R_DIR` to `-1` at the top of the sketch and upload again.
-- `l` spins the robot left.
-- Every move stops by itself after 1 s (safety).
-
-Then put it on the floor and drive it around. **Demo 1 done.**
-
----
-
-## 5. Camera demo: the laptop finds victims and fire
-
-Uses the real perception node. The robot can stay still on the floor; the camera plugs into the laptop.
-
-**5a. WSL2 only: pass the camera into Linux** (Windows PowerShell as admin):
-
-```powershell
-winget install usbipd
-usbipd list                              # find your camera's BUSID, e.g. 2-3
-usbipd bind --busid 2-3
-usbipd attach --wsl --busid 2-3
-```
-
-In Ubuntu: `sudo modprobe uvcvideo; ls /dev/video*` → you should see `/dev/video0`.
-
-**5b. Install the camera driver and calibration tool (once):**
+1. Make three **blue** victims and one **orange** "fire". Matte, saturated colours; nothing else in the arena that colour.
+2. Calibrate the camera once (print a checkerboard with 9×7 squares, measure one square):
 
 ```bash
-sudo apt install -y ros-jazzy-v4l2-camera ros-jazzy-camera-calibration
+docker/station.sh ros2 launch fire_resq_hardware station.launch.py perception:=false     # terminal 1
+docker/station.sh ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 \
+    --ros-args -r image:=/camera/image_raw -p camera:=/camera                              # terminal 2
 ```
 
-**5c. Start the camera** (terminal 1):
+Save the result over [`config/camera_c270.yaml`](../src/fire_resq_hardware/config/camera_c270.yaml) (same format) and redeploy. Until then the file holds datasheet values and every distance is approximate.
 
-```bash
-ros2 run v4l2_camera v4l2_camera_node --ros-args -r __ns:=/camera -p video_device:=/dev/video0 \
-  -p image_size:="[640,480]" -p camera_frame_id:=camera_optical_frame
-# -> /camera/image_raw and /camera/camera_info, exactly what perception reads
-```
+3. Set your objects' colours (`hsv_lo`/`hsv_hi`) and heights (`top_height_m`) in [`perception.yaml`](../src/fire_resq_perception/config/perception.yaml). How the estimate works: [CLAUDE.md](../CLAUDE.md) → "Perception".
+4. `ros2 topic echo /fire_resq/detections` — `victim` / `fire` with positions in front of the robot (`x` forward, `y` left, metres). `position_valid: false` while the robot is turning is normal.
 
-**5d. Calibrate once** (print a checkerboard with 9×7 squares, so 8×6 inner corners; measure one square). Terminal 2:
-
-```bash
-ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 \
-  --ros-args -r image:=/camera/image_raw -p camera:=/camera
-```
-
-Move the board around until CALIBRATE lights up → **CALIBRATE** → **COMMIT** (saved to `~/.ros/camera_info/`). Restart terminal 1 afterwards so the calibration is loaded.
-
-**5e. Run perception** (terminals 2–4):
-
-```bash
-# robot shape + camera position (TF), no RViz
-ros2 launch fire_resq_description display.launch.py use_rviz:=false
-```
-
-```bash
-# the robot is standing still: odom = base_link
-ros2 run tf2_ros static_transform_publisher --frame-id odom --child-frame-id base_link
-```
-
-```bash
-ros2 launch fire_resq_perception perception.launch.py target_frame:=odom spatial_backend:=known_height
-```
-
-**5f. Show it a blue object and an orange object** (terminal 5):
-
-```bash
-ros2 topic echo /fire_resq/detections
-```
-
-You'll see `victim` / `fire` detections with their positions in front of the robot (`x` forward, `y` left, in metres). An occasional `position_valid: false` is normal: positions are held back for a moment whenever the camera might be moving. **Demo 2 done.**
-
-(Checked on the laptop with a synthetic camera image: the node placed a victim 1.1 m ahead and 0.4 m left, as drawn.)
-
-- **Nothing detected?** The colour ranges were tuned for the simulation. Adjust `hsv_lo`/`hsv_hi` in [`src/fire_resq_perception/config/perception.yaml`](src/fire_resq_perception/config/perception.yaml) (`classes.victim`, `classes.fire`).
-- **Distances off?** Set your real objects' heights (`top_height_m`) in the same file. How the estimate works: [CLAUDE.md](CLAUDE.md) → "Perception".
+Fix the lighting before tuning colours: the camera's automatic exposure and white balance move the hues, and in dim light it halves its frame rate (`v4l2_controls` in `robot.yaml`).
 
 ---
 
 ## 6. Later: the full autonomous robot
 
-Do these in order. Each one is checkable on its own (the list follows [Hardware.md](Hardware.md) §11).
+In order; each one is checkable on its own ([Hardware.md](Hardware.md) §11).
 
 | # | Step | You'll know it works when |
 | --- | --- | --- |
-| 1 | Fit encoder motors, wired as in step 3 | wheel ticks count up/down with direction |
-| 2 | **Phase 12 software (to be written):** ESP32 firmware + laptop bridge: `cmd_vel` → motors, encoders → `/odom` + TF, magnet ↔ `/fire_resq/magnet/energize` + `/fire_resq/magnet/state`, a stop-if-no-command watchdog | `ros2 run teleop_twist_keyboard teleop_twist_keyboard` drives the robot and `/odom` follows it |
-| 3 | Put your measured values in `parameters.xacro` (step 2.5) | a 1 m drive reads ≈ 1 m on `/odom` |
-| 4 | Mount the depth camera | `/camera/depth/image_raw` publishes |
-| 5 | Fit the electromagnet + MOSFET (step 3); run `ros2 launch fire_resq_control magnet.launch.py` | `ros2 service call /fire_resq/set_magnet fire_resq_interfaces/srv/SetMagnet "{attach: true}"` lifts a victim |
-| 6 | Map the real arena, then run the mission: the **same commands** as the simulation guide, steps 4–5, without Gazebo | the robot rescues all victims by itself |
-
-The interfaces the bridge must speak are fixed already: [docs/Hardware_Integration.md](docs/Hardware_Integration.md) and [CLAUDE.md](CLAUDE.md) → "Magnet". The bridge goes in `src/fire_resq_hardware/` (the only package allowed to touch hardware).
+| 1 | Steps 3–5 above | teleop drives straight; a victim 1 m ahead reads about 1 m |
+| 2 | Fix the Pi's power (it reports under-voltage: [Hardware.md](Hardware.md) §7) | `vcgencmd get_throttled` stays `0x0` |
+| 3 | **Decide and build the localisation source** ([Hardware.md](Hardware.md) §5) | something publishes `map → odom` and it stays put when the robot stands still |
+| 4 | Fit the electromagnet + MOSFET module + flyback diode; write its driver node | `ros2 service call /fire_resq/set_magnet fire_resq_interfaces/srv/SetMagnet "{attach: true}"` lifts a victim |
+| 5 | Run the mission: the same launch files as the simulation guide, without Gazebo | the robot rescues all victims by itself |
 
 ---
 
 ## Safety rules
 
 - Wheels off the table for every first test.
-- Keep a hand near the power switch. The bench sketch auto-stops after 1 s; the real firmware **must** have a watchdog before any autonomous run ([Hardware_Integration.md](docs/Hardware_Integration.md)).
-- Common ground between battery, driver and ESP32. Separate the motor power from the ESP32 power.
-- Flyback diode on the electromagnet, always.
+- The firmware stops the motors 0.4 s after commands stop, and the driver refuses to talk to an Arduino that is not running this firmware. Do not remove either ([Hardware.md](Hardware.md) §8).
+- Never run a simulation in the robot's shell (`docker/station.sh` without `FIRE_RESQ_SIM=1`): its `/cmd_vel` would drive the real motors.
+- Flyback diode on the electromagnet, always. Never drive it from a bare pin.

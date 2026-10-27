@@ -13,13 +13,16 @@ Planning
       ↓
 ROS 2 interfaces
       ↓
+DRIVERS (Raspberry Pi 3B on the robot: fire_resq_hardware)
+camera_node · base_node
+      ↓ serial
 LOW LEVEL
-ESP32
-Motor Driver
-Motors
-Encoders
-Electromagnet
+Arduino Uno + L293D motor shield
+4 motors
+Electromagnet (not fitted yet)
 ```
+
+The robot as built has **no encoders and no depth camera** ([Hardware.md](Hardware.md)). The interfaces below are unchanged; what feeds them is not what this page originally assumed.
 
 ## Camera Options
 RGB camera:
@@ -35,7 +38,7 @@ RGB-D / RealSense:
 The perception interface hides this difference.
 
 ## Motor Interface
-High-level software sends velocity commands. ESP32 converts them to motor-driver commands. Encoders return wheel motion for odometry.
+High-level software sends velocity commands. `base_node` on the Pi converts them to a power per motor; the Arduino applies it. There are no encoders: `/odom` is dead reckoning from the power the firmware reports applying, and is not a position source.
 
 ## Electromagnet
 High-level planner sends:
@@ -43,7 +46,7 @@ High-level planner sends:
 ATTACH
 RELEASE
 ```
-ESP32 controls the MOSFET/relay.
+The Arduino will switch the MOSFET/relay (free pins: D2, D13, A0–A5). No actuator is fitted and the driver node is not written.
 
 ## Integration Rule
 Hardware-specific GPIO logic belongs in the hardware/control layer, not cognition.
@@ -59,4 +62,6 @@ Hardware-specific GPIO logic belongs in the hardware/control layer, not cognitio
 8. Pickup/release.
 9. Full rescue sequence.
 
-TODO: add watchdog/failsafe behavior before autonomous physical testing.
+Watchdog/failsafe: in place and measured ([Hardware.md](Hardware.md) §8): `/cmd_vel` timeout in the driver, a 400 ms command watchdog in the firmware, and a firmware identity check before any drive byte is sent.
+
+TODO: a stall check (dead-reckoned odometry cannot see a blocked robot).

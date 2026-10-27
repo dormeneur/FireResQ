@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Phases 0–7, the cognition phase (plan §13 "Phase 8", built before Phase 7 on the maintainer's instruction), Phase 9 and Phase 10 complete** — the ROS 2 workspace builds (ten packages); the simulated robot drives, reports odometry and joint states and publishes RGB/depth; a deterministic 5 m × 5 m rescue arena (fire, three victims, safe zone, obstacles) launches from a scenario file; and a navigation stack (depth → `/scan`, SLAM Toolbox or AMCL for `map→odom`, Nav2) maps the arena and drives to supplied goals; and a perception node finds the fire and victims by colour and places them in a TF frame (depth or, RGB-only, from object-height priors) on `/fire_resq/detections`; and a world model keeps a persistent belief about them (victim identities, status, confidence, fire, safe zone) on `/fire_resq/world_state`; and a cognition node decides which victim to rescue next from that belief, asking Nav2's planner for path lengths, and publishes the choice with its full explanation on `/fire_resq/rescue_target`; and the electromagnet can be commanded ATTACH/RELEASE through `/fire_resq/set_magnet`, physically picking up and releasing a victim in simulation (verified against Gazebo's own physics, not just the service response); and a rescue FSM runs the whole mission unattended from a cold start — look, let cognition choose, Nav2 to the approach, ALIGN into contact, pick up, carry, release in the safe zone, mark RESCUED, reassess, search for the hidden victim — until a coverage search finds nothing left (all three victims rescued in cognition's order, verified against Gazebo truth). All of it is covered by a regression suite that checks against Gazebo ground truth (`tests/`). Evaluation (Phase 11) and hardware are not implemented; the hardware package is a skeleton. **Plan Phase 7 (Nav2 reliability) is done**: the intermittent detour-goal failure was root-caused (a controller latch) and fixed, and the planner interface cognition uses was hardened. See [docs/Implementation_Plan.md](docs/Implementation_Plan.md) for the phase roadmap and what each phase may touch.
+**Phases 0–7, the cognition phase (plan §13 "Phase 8", built before Phase 7 on the maintainer's instruction), Phase 9 and Phase 10 complete** — the ROS 2 workspace builds (eleven packages); the simulated robot drives, reports odometry and joint states and publishes RGB/depth; a deterministic 5 m × 5 m rescue arena (fire, three victims, safe zone, obstacles) launches from a scenario file; and a navigation stack (depth → `/scan`, SLAM Toolbox or AMCL for `map→odom`, Nav2) maps the arena and drives to supplied goals; and a perception node finds the fire and victims by colour and places them in a TF frame (depth or, RGB-only, from object-height priors) on `/fire_resq/detections`; and a world model keeps a persistent belief about them (victim identities, status, confidence, fire, safe zone) on `/fire_resq/world_state`; and a cognition node decides which victim to rescue next from that belief, asking Nav2's planner for path lengths, and publishes the choice with its full explanation on `/fire_resq/rescue_target`; and the electromagnet can be commanded ATTACH/RELEASE through `/fire_resq/set_magnet`, physically picking up and releasing a victim in simulation (verified against Gazebo's own physics, not just the service response); and a rescue FSM runs the whole mission unattended from a cold start — look, let cognition choose, Nav2 to the approach, ALIGN into contact, pick up, carry, release in the safe zone, mark RESCUED, reassess, search for the hidden victim — until a coverage search finds nothing left (all three victims rescued in cognition's order, verified against Gazebo truth). All of it is covered by a regression suite that checks against Gazebo ground truth (`tests/`). Evaluation (Phase 11) is not implemented. **Hardware bring-up has started** (plan Phase 12, begun before Phase 11 on the maintainer's instruction, on a robot that differs from the planned one): ROS 2 runs on the PC and on the robot's Raspberry Pi, the Pi's camera and motor drivers and the Arduino firmware exist and are verified on the real boards with the motors unpowered, and perception runs on the PC against the real camera. The robot has **no encoders, no depth camera and no electromagnet**, so it has no localisation source and cannot run the mission yet; see "Real robot" below. **A stand-alone bottle-seeking demo exists for it** (`./demo.sh`, `src/fire_resq_demo`, [docs/DEMO.md](docs/DEMO.md)): it uses the drivers and nothing else of the rescue stack. The maintainer ran its first version on the floor (2026-10-13, "working well"); the changes asked for after that run (pivot turning, harder left turns, a closer stop) are verified in rehearsal, in unit tests and in dry-run against the real robot, **not yet on the floor**. **Plan Phase 7 (Nav2 reliability) is done**: the intermittent detour-goal failure was root-caused (a controller latch) and fixed, and the planner interface cognition uses was hardened. See [docs/Implementation_Plan.md](docs/Implementation_Plan.md) for the phase roadmap and what each phase may touch.
 
 Design docs remain the source of truth:
 
-- [PRD.md](PRD.md) — scope, MVP checklist, evaluation metrics, out-of-scope, definition of done.
+- [PRD.md](docs/PRD.md) — scope, MVP checklist, evaluation metrics, out-of-scope, definition of done.
 - [Architecture.md](Architecture.md) — ROS 2 layers, custom interfaces, package layout, sim→hardware rule.
-- [Hardware.md](Hardware.md) — component list, build phases, sim-to-hardware mapping.
+- [Hardware.md](docs/Hardware.md) — component list, build phases, sim-to-hardware mapping.
 - [docs/Implementation_Plan.md](docs/Implementation_Plan.md) — phased roadmap, per-phase definition of done.
 - [docs/Environment.md](docs/Environment.md) — verified toolchain versions and measured sim performance.
 - [docs/Cognitive_Model.md](docs/Cognitive_Model.md) — world state and the victim-priority model.
@@ -28,6 +28,8 @@ Loop: Perception → SLAM/Localization → World Model → Reasoning → Decisio
 The interesting part is the decision layer. Everything else exists to feed it a world model and execute what it picks.
 
 ## Environment
+
+**Two development machines exist.** The original one is WSL2 on Ubuntu 24.04 with Jazzy installed natively (this section's GPU notes, and every timing in this file unless it says otherwise). The robot's station PC is native **Ubuntu 26.04, which has no Jazzy packages: there everything runs in Docker** — `docker/station.sh` (real robot, ROS domain 42) or `FIRE_RESQ_SIM=1 docker/station.sh` (simulation and tests, domain 0, localhost only), with the repo mounted at `/ws`. Prefix the commands below with one of those there. The robot's Raspberry Pi (Debian 13) runs the same Jazzy in Docker too.
 
 WSL2 on Ubuntu 24.04; full toolchain installed. Versions and measured sensor rates are recorded in [docs/Environment.md](docs/Environment.md) — read that rather than re-probing.
 
@@ -50,7 +52,7 @@ All verified working as of Phase 3.
 # every new shell
 source /opt/ros/jazzy/setup.bash
 
-# build (from repo root) — 10 packages, ~19 s clean
+# build (from repo root) — 11 packages, ~19 s clean
 colcon build --symlink-install
 source install/setup.bash                 # after every build
 
@@ -148,13 +150,34 @@ ros2 launch fire_resq_simulation sim.launch.py use_depth:=false       # RGB-only
 ros2 launch fire_resq_simulation sim.launch.py world:=/abs/path.sdf x:=1.0 y:=0.5 yaw:=1.57
 ```
 
+### The real robot
+
+```bash
+docker/deploy_robot.sh pi@<robot-ip>              # copy the driver packages to the Pi, build the image there, (re)start the drivers
+docker/station.sh                                 # PC shell on the ROBOT's ROS graph (domain 42); `docker/station.sh <cmd>` runs one command
+docker/station.sh ros2 launch fire_resq_hardware station.launch.py     # decode the camera, publish the robot TF, run perception (odom frame)
+docker/station.sh ros2 run teleop_twist_keyboard teleop_twist_keyboard # drive it
+ros2 launch fire_resq_hardware robot.launch.py    # what the Pi's container runs: camera_node + base_node
+ros2 run fire_resq_hardware motor_check           # ON THE PI, wheels off the ground: which shield terminal is which wheel
+arduino-cli compile -b arduino:avr:uno src/fire_resq_hardware/firmware/base_controller    # firmware; flashed with avrdude from the Pi
+
+# THE BOTTLE DEMO (docs/DEMO.md): one script, picks the right ROS graph itself; dashboard on http://localhost:8080 (rehearsal: 8081)
+./demo.sh             # real robot: starts the Pi's drivers over ssh, builds + launches fire_resq_demo, opens the dashboard
+./demo.sh dry         # the same with NO /cmd_vel publisher at all (safe with the robot on a desk)
+./demo.sh rehearse    # pretend robot + room (fake_robot_node) in the SIMULATION graph; needs no hardware
+./demo.sh motors      # motor_check over ssh, writes its answer into config/robot.yaml, redeploys
+./demo.sh deploy | stop
+```
+
+Bring-up, flashing, restoring the old sketch and the measuring steps: [docs/HOW_TO_MAKE_THE_COMPLETE_ROBOT.md](docs/HOW_TO_MAKE_THE_COMPLETE_ROBOT.md).
+
 ### Tests
 
 Three tiers (config in `pytest.ini`). Source the workspace first (`source install/setup.bash`).
 
 ```bash
-python3 -m pytest tests/unit -q                       # <1 s: scenario, robot params, Nav2 params, launch/config rules, architecture guards
-python3 -m pytest tests/node -q                       # ~40 s: the perception and world-model nodes in-process against synthetic ROS traffic (no Gazebo)
+python3 -m pytest tests/unit -q                       # seconds (387 tests): scenario, robot params, Nav2 params, launch/config rules, architecture guards, hardware drive model/protocol, the bottle demo
+python3 -m pytest tests/node -q                       # ~100 s (59 tests): perception, world-model, cognition, magnet and base-driver nodes in-process against synthetic ROS traffic (no Gazebo)
 python3 -m pytest tests/sim -m "not slow" -q          # ~20 min: launches the real sim (one per module) - robot, TF, sensors, arena, scan, SLAM, AMCL, Nav2
 python3 -m pytest tests -q -rPx                       # EVERYTHING (488 tests: 314 unit, 54 node, 120 sim): ~48 min on a healthy host, far more on a stalling one (see "Test reliability"); -rPx prints the MEASURED values
 python3 -m pytest tests/sim/test_robot.py -k spin -v  # one module / one case
@@ -164,6 +187,8 @@ python3 -m pytest tests/sim/test_rescue_faults.py -q -rP   # Phase 10: refused a
 ```
 
 **Test reliability on this host (measured, plan Phases 6–10).** A complete run takes ~48 min on a healthy host (Phase 5: 217 passed + 1 xfail; later runs: 372 passed, 1 xfail, a few intermittent failures; plan Phase 7 final: 401 passed, 2 xfailed, 0 failed in 34 min; plan Phase 9 final: 424 passed, 2 xfailed, 0 failed in 35 min; **plan Phase 10 final: 486 passed, 2 xfailed, 0 failed in 48 min**, 368 non-sim + 120 sim tests — the rescue mission and its faults add ~15 min). **The Nav2 detour-goal failure is fixed** (plan Phase 7, controller latch; see "Navigation"). **The map-precision test is also fixed** (plan Phase 7, maintainer-approved): `test_occupied_cells_lie_on_real_surfaces` was measuring a ~4 cm rigid map offset from Gazebo's frame as much as map shape (raw 68–93 % against a 70 % threshold, 87–98.5 % after removing the offset, over 11 maps), so it now grid-searches the best-fit rigid translation and scores the aligned distances against the SAME 70 %/95 % thresholds, plus a new hard bound that the offset itself stays ≤ 10 cm. One Phase 4 test remains **intermittent, environmental, deliberately not loosened**: `test_scan_rate` (the depth/`/scan` render rate is 11–28 Hz per sim second on every tree, floor 12 Hz; `sensor_rate_diag.py`). A **stalling host** (Windows-side; seen after long uptime; a WSL reboot cleared it) makes far more fail: robot motion, topic/scan rates, fixture start-up, an 8.5-min build instead of 17 s. So: before trusting a sim failure, check the real-time factor (`gz topic -e -t /stats -n 6` → `real_time_factor` ≈ 1.0, ignoring the first samples, and no 0.5 / 3.0 swings), rerun the module, and if it still fails A/B it against a clean worktree of the last accepted commit (`git worktree add <dir> <commit>` + `colcon build`, alternating runs, *several* of each: single runs mislead, and the tally of a tree that was mostly run inside full-suite runs was confounded). To isolate SLAM/map randomness from a Nav2 result, reuse one saved map for both trees: the mapping fixture saves it under `/tmp/fire_resq_map_*/arena.yaml`; then `FIRE_RESQ_TEST_MAP=<that yaml> python3 -m pytest tests/sim/test_nav2.py`. Tests that count messages must count per *simulation* second, never wall-clock; `lifecycle_state()` returns `unknown` on a slow `ros2` CLI call so wait loops keep polling.
+
+**Node tier on the Docker station PC (measured 2026-10-13): 2–3 of the 54 pre-existing node tests fail per run, a different set each time** (perception and world-model timing tests), with or without the hardware changes. Cause, reproduced with no project code at all: on that rclpy (7.1.11) a `MultiThreadedExecutor` spinning a 20 Hz publisher node and a subscriber node in one process freezes every Python thread for 0.2–1 s at a time and loses over half the messages, on every DDS transport setting tried. Every node-test harness except `test_base_node.py` uses that executor; **no production node does**. Not fixed. Do not read those failures as regressions without rerunning, and never run two pytest processes in the same container at once (they share one ROS graph). The unit tier is clean there (387 passed); the sim tier has not been run on that machine.
 
 **Reproducible experiments** (not tests; pytest does not collect them) live in `tests/sim/experiments/`: `slam_fov_spike.py` (the Phase 4 Step 0 SLAM viability/tuning measurements), `nav2_localization_diag.py` (SLAM/odometry error vs velocity while Nav2 drives), `nav_performance.py` (rates, map-update cadence, CPU, RTF), `perception_accuracy.py` (Phase 5: position error per estimator and range, and what the motion gate costs and buys).
 
@@ -175,7 +200,7 @@ The sim tests launch and tear down their own simulation (own process group; no s
 # drive forward 5 s at 0.2 m/s
 ros2 topic pub --times 100 -r 20 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.2}}"
 # ...and STOP it. Gazebo's diff drive holds the last command indefinitely, so a publisher
-# that exits leaves the robot driving. (This is why the ESP32 needs a cmd_vel watchdog.)
+# that exits leaves the robot driving. (This is why the real base has a cmd_vel watchdog in both the driver and the firmware.)
 ros2 topic pub --times 5 -r 10 /cmd_vel geometry_msgs/msg/Twist "{}"
 # keyboard: ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
@@ -207,7 +232,11 @@ src/fire_resq_world_model/    Phase 6 ✅ sole owner of believed state: pure-Pyt
 src/fire_resq_cognition/      Phase 8 ✅ VictimPrioritizer (weighted utility + nearest baseline), Nav2 path-query adapter, prioritizer_node
 src/fire_resq_planning/       Phase 10 ✅ RescueFSM (pure, deterministic) + coverage SEARCH + rescue_node (ROS glue, ExecuteRescue)
 src/fire_resq_control/        Phase 9 ✅ magnet_node + MagnetBackend (hardware-neutral); velocity plumbing still TODO
-src/fire_resq_hardware/       Phase 12  ESP32 bridge — the ONLY hardware-aware package
+src/fire_resq_hardware/       Phase 12 (started) the ONLY hardware-aware package: Pi drivers (camera_node, base_node), station image decoder,
+                              Arduino firmware (firmware/base_controller), config/robot.yaml. See "Real robot"
+src/fire_resq_demo/           the bottle demo for the real robot (NOT part of the rescue stack): vision, Seeker behaviour, dead-reckoned sketch map,
+                              web dashboard, and a pretend robot for rehearsal. Reaches the robot through ROS topics only. demo.sh runs it
+docker/                       Jazzy images + scripts for the station PC and the Pi (neither host OS has Jazzy packages)
 simulation/                   fire_resq_simulation: worlds, models/{victim,fire}, config/scenarios, launch, gz wrapper,
                               and fire_resq_simulation/ (pure-Python scenario loader/validator/world generator)
 tests/unit, tests/sim         see "Tests" above
@@ -346,6 +375,29 @@ SELECT_TARGET (nothing selectable) -> SEARCH (coverage of the saved map) -> PERC
 - **`MISSION_COMPLETE` needs evidence** (coverage ≥ 0.95 of the free space, nothing selectable); a search that runs out with victims unresolved is `MISSION_ABORTED`.
 - **The FSM cannot see its own localisation error** or a stalled robot whose odometry still moves: both are recorded limitations (hardware TODO: a stall check). The integrated tests judge every claim against Gazebo truth.
 
+## Real robot (plan Phase 12, started)
+
+```text
+PC "station" (Docker, domain 42)          Raspberry Pi 3B (Docker)                 Arduino Uno + L293D shield
+image_decoder_node -> /camera/image_raw   camera_node  C270 MJPEG, untouched        firmware/base_controller
+perception -> /fire_resq/detections       base_node    /cmd_vel -> "M m1 m2 m3 m4"  "S ..." = power really applied
+(everything above the drivers)            /odom + TF odom->base_link (open loop)    400 ms watchdog, 4 motors on 4x AA
+```
+
+The robot is **not the one the plan assumed** (no ESP32, 2WD, encoders or depth camera): it is a 4WD skid-steer base with a Pi on board, an RGB webcam and an Arduino motor shield. [docs/Hardware.md](docs/Hardware.md) describes it and lists what is open; `fire_resq_hardware`'s package docstring maps the nodes. Measured numbers below are from the real boards, motors unpowered. What you must not forget:
+- **`/odom` is dead reckoning from commanded motor power.** No encoders. It exists so perception's motion gate and TF have an `odom` frame; it cannot see slip, stall or a blocked robot, and skid-steer turning is mostly slip. Never present it as measured odometry, and never feed it to a matcher as if it were (compare `slam_preset:=odom_only`, which is "NOT SLAM" for the same reason).
+- **Nothing publishes `map → odom`, and the simulated navigation pipeline has no input here**: no depth image means no `/scan`. Localisation and mapping for this robot is an OPEN DECISION ([docs/Hardware.md](docs/Hardware.md) §5), not a TODO to fill in quietly. World model, cognition and the rescue FSM all need `map`.
+- **Three stops, all load-bearing**: `base_node` zeroes a `/cmd_vel` silent for 0.5 s; the firmware releases the motors 0.35–0.45 s after commands stop (measured); and `base_node` sends NOTHING to a board that does not answer `FIRERESQ_BASE <protocol>`. That last one is not paranoia: this Uno carried an arm sketch in which the byte `S` starts a servo sequence, and the Pi's old scripts send `S` to stop.
+- **Wiring lives in `config/robot.yaml`, never in firmware.** It is now copied from the maintainer's own working sketch: forward = all four terminals forward; left = M1+M2 backward, M3+M4 forward. So `left_motors: [1, 2]`, `right_motors: [3, 4]`, all signs +1, `turn_style: skid`. (The earlier guess, M1+M3 against M2+M4, made each side's two wheels fight and the robot would not turn; the pivot styles built on that guess did not move it at all.) `motor_check` has still not been run, and `front_motors` is unverified. The three drive-calibration numbers there are placeholders.
+- **The robot is ROS domain 42; simulation is domain 0, localhost-only.** One graph for both would let a simulated `/cmd_vel` drive real motors. `docker/station.sh` picks the domain; do not "simplify" it.
+- **`--ulimit nofile=1024:4096` on the Pi's container is worth 128 MB per process.** Docker gives containers a ~2^30 open-file limit there and `liblttng-ust` (loaded by every ROS 2 process) sizes a table by it: a node measured 198 MB without the flag, 71 MB with it, on a 905 MB Pi that had started swapping.
+- **The Pi publishes the camera's own MJPEG bytes** (0.2 % of a core; re-encoding would cost real CPU). They carry no Huffman tables; OpenCV and libjpeg-turbo assume the standard ones. In dim light the C270 halves its frame rate (15 requested, 7.6 delivered).
+- **Camera intrinsics are datasheet values (f = 768 px, about 45° HFOV), not a calibration**, and `parameters.xacro` still holds the simulated robot's camera position. Every real-robot distance is approximate until both are measured.
+- Measured link (same Wi-Fi, 640×480): camera 7.6 fps and 166 kB/s, 48–62 ms capture-to-decoded; `/odom` 20 Hz; `/cmd_vel` to "applied" reported back in 180–280 ms; Pi 95 % idle with both drivers (base 11 % of a core, camera 2 %), ~515 MB available. **The Pi reported under-voltage** (`throttled=0x50000`) on its power bank.
+- Default DDS discovery (FastDDS multicast) works on the network it was tested on; a network that blocks multicast will need a discovery server or static peers.
+- **The bottle demo (`fire_resq_demo`) is the only thing that drives this robot autonomously, and it is built around not trusting it.** Bottles are identified by colour (or darkness: "black"), never by position; turning is done in short pulses with a look in between, and the real turn rate (and a swapped left/right) is learned from how far a bottle moved in the picture; its map is `/odom` with the turning rescaled plus the camera's "where the floor stops" points. It is **not SLAM**: the dashboard's panel is titled just "Map" (the maintainer had the "dead reckoning, not SLAM" caption removed, 2026-10-13), the code and docs say what it is, and a unit test fails if the page ever claims SLAM. **Obstacle detection and the stopping distance now rely on two digital IR sensors** (`ir_node`, GPIO17 left / GPIO27 right, 2026-10-16; `/fire_resq/ir_left`, `/fire_resq/ir_right`), not the camera: each is a plain "something is close" switch with no distance and no colour, so they decide WHETHER something is in the way or the target has been reached, while the camera still decides WHICH coloured object to go to and steers at it. The camera's floor-colour obstacle test and picture-coverage arrival rule are kept only as a fallback for while the IR topics are silent (`seek.ir_fresh_s`, 1 s) - a dead sensor degrades the robot, it does not blind it. `active_low: true` (robot.yaml) is inferred from one bench reading PLUS the maintainer's own gpiozero test script (`active_state=False`), not a datasheet. The camera sits about 5 cm above the floor tilted slightly down: `camera.height_m` 0.05 and `camera.horizon_row` 200 in `config/demo.yaml` are **estimates from one frame**, not measurements. Measured on the real camera in a lit room at night: floor S 27 / V 130–165, beige wall S 60–100 / V 57–107, black bottle V 3–18; hence `sat_min` 120 and `dark_max` 40. `base_node` now sends a changed command at once instead of on its next 10 Hz tick (a 0.15 s pulse needs that). **Turning on the spot has five styles** (`drive.py` `TURN_STYLES`, `robot.yaml` `turn_style`, switchable live: the dashboard's "Turning style" or `ros2 param set /base_node turn_style ...`): after the first powered runs the maintainer asked for a pivot instead of the skid spin, for left turns to be pushed harder (`seek.left_boost` 1.25) and for a much closer stop (`seek.arrive_width_frac` 0.70: the bottle's width in the picture, since that close its base is out of view; a half-visible target keeps being steered at). The pivot styles did not move the robot on the floor (they were built on the wrong side assignment); the default is back to `skid` on the corrected sides.
+- Not implemented on purpose (explicit TODOs): the magnet driver (no actuator), a localisation source, a stall check, moving perception onto the Pi (it has the headroom; not yet measured there), start-at-boot.
+
 ## The rescue arena (Phase 3)
 
 **The scenario YAML is the only place object placement lives** (`simulation/config/scenarios/default.yaml`; schema documented in its header, unknown keys rejected). It is simulator ground truth: **no robot node may read it** (a unit-test guard enforces this) — the robot learns the world through perception → world model. The world SDF is *generated* from it at every launch (byte-identical output for identical YAML), by injecting the scenario into the shared base world so physics/plugins are defined once. Layout rules (wall/obstacle clearance, victim spacing > the world model's association gate, nothing overlapping, no victim in the safe zone) are validated at load, so a bad generated scenario fails loudly. To try another layout, write another YAML.
@@ -378,7 +430,7 @@ Nearest-first and risk-aware prioritisation give *different answers* here (victi
 
 Work down the simulation ladder in [docs/Simulation.md](docs/Simulation.md) — each stage is verifiable on its own and later stages assume earlier ones work: robot spawns and drives via `/cmd_vel` → simulated camera/depth + odometry → SLAM map and localization → perception detections → world model ingests detections → decision engine picks a victim dynamically → Nav2 drives to it → simulated electromagnet attach/release → return to safe zone → mark rescued and select the next target.
 
-Simulation must reach the [PRD.md](PRD.md) definition of done before any hardware work. Hardware then follows the six phases in [Hardware.md](Hardware.md) (base → odometry → camera → rescue mechanism → navigation → full integration).
+The plan was for simulation to reach the [PRD.md](docs/PRD.md) definition of done before any hardware work; the maintainer started hardware bring-up early (2026-10-13). Hardware follows the six phases in [docs/Hardware.md](docs/Hardware.md) §11 (base → odometry → camera → rescue mechanism → navigation → full integration), whose table records how far each has got. **Next up on hardware:** run `motor_check` (`./demo.sh motors`) and the drive measurements with the motors powered, the first powered run of the bottle demo, then the localisation decision.
 
 ## Hard rules (from the docs)
 
@@ -386,7 +438,7 @@ Simulation must reach the [PRD.md](PRD.md) definition of done before any hardwar
 - **Layer separation:** cognition/planning never touch GPIO or specific hardware. Moving from sim to hardware swaps drivers under stable ROS-level interfaces (velocity commands, odometry, TF, camera/depth streams, electromagnet ATTACH/RELEASE + state).
 - **Camera independence:** perception exposes camera-agnostic detections; RGB and RGB-D (RealSense) backends are interchangeable, and cognition must not care which one produced spatial estimates.
 - **Frames:** `map`, `odom`, `base_link`, camera frame(s) via TF2; no hardcoded coordinates in cognitive code.
-- **No LiDAR dependency.** Laptop runs ROS 2/perception/cognition; ESP32 handles motors, encoders, and the electromagnet MOSFET/relay.
+- **No LiDAR dependency.** The PC runs perception/cognition/planning/navigation; the robot's Raspberry Pi runs device drivers; the Arduino handles motors only (and the electromagnet's switching once one is fitted). Device access lives in `fire_resq_hardware` and nowhere else.
 - **Rescue task sequence:** SELECT VICTIM → NAVIGATE → ALIGN → PICK UP → RETURN → RELEASE → MARK RESCUED → REASSESS.
-- **Extensions stay as explicit `TODO`s in code**, not implementations, until the MVP works: uncertainty propagation, Bayesian belief updates, active perception, dynamic fire risk, battery/resource awareness, algorithm comparison, recovery from failed detection/pickup/navigation. A watchdog/failsafe is required before autonomous physical testing.
+- **Extensions stay as explicit `TODO`s in code**, not implementations, until the MVP works: uncertainty propagation, Bayesian belief updates, active perception, dynamic fire risk, battery/resource awareness, algorithm comparison, recovery from failed detection/pickup/navigation. A watchdog/failsafe is required before autonomous physical testing (in place: see "Real robot").
 - **Avoid unnecessary complexity until the MVP works** — this is stated as a project constraint, not just a style preference.

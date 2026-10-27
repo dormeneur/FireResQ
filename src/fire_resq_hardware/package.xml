@@ -7,13 +7,23 @@
   <maintainer email="adityabharti1214@gmail.com">Aditya Bharti</maintainer>
   <license>Apache-2.0</license>
 
+  <!-- Deliberately small: this is everything the Raspberry Pi has to build. The magnet driver will add
+       fire_resq_interfaces (MagnetState) when the pickup hardware exists. -->
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>fire_resq_description</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-libgpiod</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>fire_resq_interfaces</exec_depend>
-  <exec_depend>fire_resq_control</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

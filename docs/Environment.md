@@ -195,3 +195,21 @@ gz topic -e -t /stats -n 3 | grep real_time_factor    # want ~1.0
 ```
 
 The Phase 0 probe world was throwaway and was not committed; Phase 2 creates the real arena under `simulation/worlds/`.
+
+## 8. The robot's station PC and the Raspberry Pi (Docker)
+
+Verified: 2026-10-13. Everything above describes the original WSL2 machine. The physical robot is developed from a second PC and its own on-board computer, neither of which can install Jazzy natively.
+
+| | Station PC | Robot |
+| --- | --- | --- |
+| Hardware | 16 cores, 14 GB RAM, RTX 4060 Laptop (8 GB) | Raspberry Pi 3 Model B Rev 1.2, 4 cores, 905 MB RAM |
+| OS | Ubuntu 26.04.1 (no Jazzy packages) | Raspberry Pi OS, Debian 13 trixie, arm64 (no Jazzy packages) |
+| ROS 2 | `fire_resq/station` image (`osrf/ros:jazzy-desktop` + Nav2, SLAM Toolbox, Gazebo Harmonic), 6.8 GB | `fire_resq/robot` image (`ros:jazzy-ros-base` + the two driver packages), built on the Pi |
+| Versions (as measured) | rclpy 7.1.11, rmw_fastrtps 8.4.4, Python 3.12.3 | Fast DDS 2.14.6, Python 3.12 |
+| How to enter | `docker/station.sh` (robot, domain 42) · `FIRE_RESQ_SIM=1 docker/station.sh` (sim/tests, domain 0, localhost) | `docker/deploy_robot.sh pi@<ip>` |
+
+- **Workspace build in the station container:** 10 packages in 15.5 s. Unit tier 345 passed in 8 s.
+- **Node tier is flaky there** (2-3 of 54 pre-existing tests per run, a different set each time). Reproduced without project code: a `MultiThreadedExecutor` spinning a 20 Hz publisher node and a subscriber node in one process makes `time.sleep(0.05)` take 120-280 ms on average (worst 1.1 s) and delivers 52-104 of ~200 messages, with shared memory, UDP-only and subnet discovery alike. A single-threaded executor does not (50.3 ms). Only test harnesses use the multi-threaded executor.
+- **Not available yet:** the GPU inside the container (needs `nvidia-container-toolkit`, which needs `sudo`); the simulation tier has not been run on this machine; RViz/Gazebo GUIs from the container are untested.
+- **Pi memory:** see CLAUDE.md "Real robot" for the open-file-limit finding (128 MB per ROS 2 process). With the fix: `ros2 launch` 38 MB, `base_node` 71 MB, `camera_node` 156 MB (most of it OpenCV's libraries), 515 MB available.
+- **Network:** PC and Pi on one Wi-Fi subnet; default Fast DDS multicast discovery works in both directions; `/odom` gaps over Wi-Fi 48 ms mean, 294 ms worst; clocks NTP-synchronised on both (required: TF stamps cross machines).

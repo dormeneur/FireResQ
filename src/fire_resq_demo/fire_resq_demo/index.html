@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FireResQ bottle seeker</title>
+<style>
+  :root { --bg:#12161c; --panel:#1b222c; --line:#2b3644; --text:#e8edf3; --dim:#8c9aab; --go:#2fbf71; --stop:#e5484d; --warn:#f5a524; --accent:#3cbef0; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0 12px 0 0; font-weight:650; }
+  .pill { padding:3px 10px; border-radius:99px; background:var(--panel); border:1px solid var(--line); color:var(--dim); font-size:13px; white-space:nowrap; }
+  .pill.ok { color:var(--go); border-color:#245a3d; } .pill.bad { color:var(--stop); border-color:#6b2b2d; } .pill.warn { color:var(--warn); border-color:#6b5320; }
+  .spacer { flex:1; }
+  button { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 14px; cursor:pointer; }
+  button:hover { border-color:var(--dim); }
+  select { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; max-width:100%; }
+  button.go { background:var(--go); border-color:var(--go); color:#06210f; font-weight:700; padding:9px 26px; }
+  button.stop { background:var(--stop); border-color:var(--stop); color:#fff; font-weight:700; padding:9px 26px; }
+  button:disabled { opacity:.45; cursor:default; }
+  #headline { padding:14px 16px 4px; font-size:clamp(22px, 3.2vw, 40px); font-weight:700; letter-spacing:-.01em; min-height:1.5em; }
+  #note { padding:0 16px 8px; color:var(--warn); min-height:1.4em; }
+  main { display:grid; grid-template-columns:minmax(0, 4fr) minmax(0, 3fr); gap:14px; padding:0 16px; }
+  @media (max-width: 900px) { main, .lower { grid-template-columns:1fr !important; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .panel h2 { margin:0; padding:8px 12px; font-size:13px; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--line); }
+  .panel img { display:block; width:100%; height:auto; background:#0c0f13; }
+  #mapimg { aspect-ratio:1; object-fit:contain; }
+  #bottles { display:flex; flex-wrap:wrap; gap:10px; padding:14px 16px 0; min-height:74px; }
+  .bottle { display:flex; align-items:center; gap:10px; padding:8px 14px 8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  .bottle.target { border-color:#fff; box-shadow:0 0 0 2px #ffffff40; }
+  .bottle.visited { border-color:#245a3d; } .bottle.lost { opacity:.5; }
+  .swatch { width:22px; height:40px; border-radius:6px 6px 4px 4px; border:2px solid #ffffffb0; }
+  .bottle b { display:block; text-transform:capitalize; } .bottle small { color:var(--dim); }
+  .empty { color:var(--dim); padding:10px 0; }
+  .lower { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:14px; padding:14px 16px 24px; }
+  #log { margin:0; padding:8px 12px; list-style:none; height:190px; overflow:auto; }
+  #log li { padding:2px 0; color:var(--dim); } #log li:first-child { color:var(--text); }
+  .controls { padding:10px 12px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  .pad { display:grid; grid-template-columns:repeat(3, 46px); gap:6px; }
+  .pad button { padding:8px 0; }
+  details summary { cursor:pointer; color:var(--dim); margin:6px 0; }
+  .tune { display:grid; grid-template-columns:minmax(0, 1fr) 150px 52px; gap:6px 10px; align-items:center; font-size:14px; }
+  .tune input[type=range] { width:100%; } .tune output { color:var(--dim); text-align:right; font-variant-numeric:tabular-nums; }
+  .facts { color:var(--dim); font-size:13px; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FireResQ · bottle seeker</h1>
+  <span class="pill" id="p-cam">camera</span>
+  <span class="pill" id="p-robot">robot</span>
+  <span class="pill" id="p-ir-l">IR L</span>
+  <span class="pill" id="p-ir-r">IR R</span>
+  <span class="pill warn" id="p-dry" hidden>DRY RUN: motors off</span>
+  <span class="pill" id="p-time" hidden></span>
+  <span class="spacer"></span>
+  <label class="pill"><input type="checkbox" id="voice"> voice</label>
+  <button class="go" id="start">START</button>
+  <button class="stop" id="stop">STOP</button>
+</header>
+<div id="headline">Connecting ...</div>
+<div id="note"></div>
+<main>
+  <div class="panel"><h2>What the robot sees · click an object to send the robot to it</h2><img id="camimg" src="/camera.mjpg" alt="camera" style="cursor:crosshair"></div>
+  <div class="panel"><h2>Map</h2><img id="mapimg" src="/map.mjpg" alt="map"></div>
+</main>
+<div id="bottles"></div>
+<div class="lower">
+  <div class="panel"><h2>What it is doing</h2><ul id="log"></ul></div>
+  <div class="panel"><h2>Controls</h2>
+    <div class="controls">
+      <div class="row">
+        <div class="pad">
+          <span></span><button data-v="-1" data-w="0">▲</button><span></span>
+          <button data-v="0" data-w="1">◀</button><button data-v="1" data-w="0">▼</button><button data-v="0" data-w="-1">▶</button>
+        </div>
+        <div style="color:var(--dim);font-size:13px;max-width:230px">Hold to drive by hand (only while stopped). Keys: arrows drive, Enter starts, Space stops.</div>
+        <span class="spacer"></span>
+        <button id="floor" title="Use when the picture is full of false obstacle marks. The floor just in front of the robot must be clear.">Re-learn floor</button>
+        <button id="reset">Forget bottles</button>
+      </div>
+      <div class="row" id="follow"><span>Go to tall objects coloured:</span></div>
+      <details open><summary>Tuning (saved automatically)</summary><div class="tune" id="tune"></div></details>
+      <div class="facts" id="facts"></div>
+    </div>
+  </div>
+</div>
+<script>
+const NAMES = {
+  'seek.expected_bottles': 'Number of bottles (0 = find out)', 'seek.wait_s': 'Wait at each bottle (s)',
+  'seek.arrive_cover_frac': 'Stop when the object covers this much of the picture', 'seek.final_push_s': 'Then drive on blind for (s)',
+  'seek.drive_speed': 'Drive speed', 'seek.turn_speed': 'Turn power', 'seek.left_boost': 'Left turns: extra push (×)', 'seek.right_boost': 'Right turns: extra push (×)',
+  'vision.sat_min': 'Colour: how vivid counts as coloured', 'vision.dark_max': 'Black: how dark counts as black',
+  'vision.detect_black': 'Look for black bottles', 'seek.avoid': 'Avoid obstacles',
+  'seek.obstacle_range_m': 'Obstacle: react within (m)', 'vision.floor_l_tol': 'Obstacle: darker than the floor by',
+  'vision.floor_ab_tol': 'Obstacle: colour differs from floor by',
+  'camera.height_m': 'Camera lens height above floor (m)', 'camera.horizon_row': 'Horizon line (dashed, row)' };
+const $ = id => document.getElementById(id);
+const post = body => fetch('/cmd', {method: 'POST', body: JSON.stringify(body)}).catch(() => {});
+let lastEvent = 0, built = false, busy = {}, first = true;
+
+function say(text) {
+  if (!$('voice').checked || !window.speechSynthesis) return;
+  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+function buildTuning(s) {
+  const box = $('tune');
+  for (const key of Object.keys(NAMES)) {
+    if (!(key in s.settings)) continue;
+    const [lo, hi] = s.limits[key], value = s.settings[key], toggle = typeof value === 'boolean';
+    const label = document.createElement('label'); label.textContent = NAMES[key]; label.htmlFor = 't-' + key;
+    const input = document.createElement('input'); input.id = 't-' + key;
+    const out = document.createElement('output');
+    if (toggle) { input.type = 'checkbox'; input.checked = value; }
+    else { input.type = 'range'; input.min = lo; input.max = hi; input.step = Number.isInteger(value) && hi > 2 ? 1 : 0.01; input.value = value; out.textContent = value; }
+    input.addEventListener('input', () => { busy[key] = Date.now(); if (!toggle) out.textContent = input.value; });
+    input.addEventListener('change', () => post({action: 'set', key, value: toggle ? (input.checked ? 1 : 0) : Number(input.value)}));
+    box.append(label, input, out);
+  }
+  for (const [name] of s.colours) {
+    const label = document.createElement('label'), box = document.createElement('input');
+    box.type = 'checkbox'; box.id = 'f-' + name; label.className = 'pill';
+    box.addEventListener('change', () => { busy['f-' + name] = Date.now(); post({action: 'follow', name, on: box.checked}); });
+    label.append(box, ' ' + name); $('follow').append(label);
+  }
+  built = true;
+}
+function render(s) {
+  $('headline').textContent = s.headline;
+  $('note').textContent = s.note || (s.turning.reversed ? 'Left and right look swapped in the wiring config: turns are being reversed. Run ./demo.sh motors.' : '');
+  $('p-cam').textContent = s.camera_ok ? `camera ${s.fps} fps` : 'no camera';
+  $('p-cam').className = 'pill ' + (s.camera_ok ? 'ok' : 'bad');
+  $('p-robot').textContent = s.robot_ok ? 'robot connected' : 'robot not answering';
+  $('p-robot').className = 'pill ' + (s.robot_ok ? 'ok' : 'bad');
+  for (const [id, label, on] of [['p-ir-l', 'IR L', s.ir.left], ['p-ir-r', 'IR R', s.ir.right]]) {
+    $(id).textContent = label + (s.ir.fresh ? (on ? ': object' : ': clear') : ': no data');
+    $(id).className = 'pill ' + (!s.ir.fresh ? 'bad' : (on ? 'warn' : 'ok'));
+  }
+  $('p-dry').hidden = s.drive;
+  $('p-time').hidden = s.elapsed === null; $('p-time').textContent = s.elapsed + ' s';
+  $('start').disabled = s.running;
+  const box = $('bottles'); box.replaceChildren();
+  if (!s.bottles.length) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'No bottles seen yet.'; box.append(e); }
+  for (const b of s.bottles) {
+    const card = document.createElement('div'); card.className = 'bottle ' + b.status;
+    const sw = document.createElement('div'); sw.className = 'swatch'; sw.style.background = `rgb(${b.rgb.join(',')})`;
+    const txt = document.createElement('div'), name = document.createElement('b'), sub = document.createElement('small');
+    name.textContent = b.name;
+    sub.textContent = {target: 'going there now', visited: 'visited ✓', lost: 'lost sight of it', seen: 'remembered'}[b.status]
+      + (b.visible ? ` · covers ${Math.round(100 * b.cover)}% of the picture` : '');
+    txt.append(name, sub); card.append(sw, txt); box.append(card);
+  }
+  for (const [id, text] of s.events) {
+    if (id <= lastEvent) continue;
+    lastEvent = id;
+    const li = document.createElement('li'); li.textContent = text; $('log').prepend(li);
+    if (!first) say(text);
+  }
+  first = false;
+  if (!built) buildTuning(s);
+  for (const key of Object.keys(s.settings)) {
+    const input = $('t-' + key);
+    if (!input || Date.now() - (busy[key] || 0) < 1500) continue;
+    if (input.type === 'checkbox') input.checked = s.settings[key];
+    else { input.value = s.settings[key]; input.nextSibling.textContent = s.settings[key]; }
+  }
+  for (const [name, on] of s.colours) if (Date.now() - (busy['f-' + name] || 0) > 1500) $('f-' + name).checked = on;
+  $('facts').textContent = (s.floor_visible === null ? '' : `Floor still in view: ${Math.round(100 * s.floor_visible)}%. `) + `Learned on the way: turns about ${s.turning.rate_deg_s}°/s; the driver's odometry turn × ${s.turning.odom_gain}; turn power × ${s.turning.power}.`;
+}
+async function poll() {
+  try { render(await (await fetch('/state')).json()); }
+  catch (e) { $('headline').textContent = 'Demo not running'; $('p-cam').className = $('p-robot').className = 'pill bad'; }
+  setTimeout(poll, 250);
+}
+$('camimg').addEventListener('click', e => {
+  const r = e.target.getBoundingClientRect();
+  post({action: 'pick', x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height});
+});
+$('start').onclick = () => post({action: 'start'});
+$('stop').onclick = () => post({action: 'stop'});
+$('reset').onclick = () => post({action: 'reset'});
+$('floor').onclick = () => post({action: 'floor'});
+let driving = null;
+function drive(v, w) { stopDrive(); const send = () => post({action: 'drive', v, w}); send(); driving = setInterval(send, 150); }
+function stopDrive() { if (driving) { clearInterval(driving); driving = null; post({action: 'drive', v: 0, w: 0}); } }
+for (const b of document.querySelectorAll('.pad button')) {
+  b.addEventListener('pointerdown', () => drive(Number(b.dataset.v), Number(b.dataset.w)));
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) b.addEventListener(ev, stopDrive);
+}
+const KEYS = {ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, 1], ArrowRight: [0, -1]};
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === ' ') { e.preventDefault(); post({action: 'stop'}); }
+  else if (e.key === 'Enter') post({action: 'start'});
+  else if (KEYS[e.key] && !e.repeat) { e.preventDefault(); drive(...KEYS[e.key]); }
+});
+addEventListener('keyup', e => { if (KEYS[e.key]) stopDrive(); });
+addEventListener('blur', stopDrive);
+poll();
+</script>
+</body>
+</html>

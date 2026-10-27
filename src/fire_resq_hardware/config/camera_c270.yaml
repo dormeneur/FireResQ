@@ -1,0 +1,29 @@
+# Logitech C270 at 640x480 - NOMINAL intrinsics, NOT a calibration of this camera.
+# Standard ROS calibration format: the file `camera_calibration` writes on COMMIT replaces this one as-is
+# (docs/HOW_TO_MAKE_THE_COMPLETE_ROBOT.md).
+#
+# TODO(hardware): calibrate this camera with a checkerboard. Until then the RGB-only range estimate is off by
+#                 however much the true focal length differs from 768 px (range error scales 1:1 with it).
+# Where 768 comes from: Logitech's stated 55 degree DIAGONAL field of view. The 640x480 diagonal is 800 px, so
+# f = 400 / tan(27.5 deg) = 768 px, which is a HORIZONTAL field of view of 45 degrees - about half the 87
+# degrees the simulated robot was tuned with. Principal point assumed at the image centre; no distortion.
+image_width: 640
+image_height: 480
+camera_name: c270_nominal
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [768.0, 0.0, 320.0, 0.0, 768.0, 240.0, 0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [768.0, 0.0, 320.0, 0.0, 0.0, 768.0, 240.0, 0.0, 0.0, 0.0, 1.0, 0.0]

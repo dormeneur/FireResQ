@@ -1,0 +1,31 @@
+# The bottle demo (ros2 launch fire_resq_demo demo.launch.py). Every vision.* and seek.* field of
+# VisionParams / SeekerParams can be set here; these are the ones worth knowing. The dashboard's sliders
+# override this file and are remembered in demo_settings.json (delete that file to come back to these values).
+
+bottle_demo:
+  ros__parameters:
+    host: 127.0.0.1                     # the dashboard can START the robot: localhost only. 0.0.0.0 = whole network
+    port: 8080
+
+    # ---- camera mounting. TODO(hardware): both are ESTIMATES from one picture of a bottle, not measurements.
+    camera.height_m: 0.05               # lens above the floor. Measure it with a ruler.
+    camera.horizon_row: 200.0           # image row at the lens's own height; 240 if the camera were level
+                                        # (the dashed line on the camera picture: it belongs where a far floor ends)
+
+    # ---- what counts as a bottle
+    vision.sat_min: 120                 # coloured = at least this saturated (the beige wall measured 60-100)
+    vision.dark_max: 40                 # black = at most this bright (the black bottle measured 3-18, the wall 57+)
+    vision.detect_black: true
+
+    # ---- behaviour
+    seek.wait_s: 5.0
+    seek.expected_bottles: 0            # 0 = keep looking until a full turn finds nothing new
+    seek.drive_speed: 0.12              # commanded m/s. robot.yaml's speed numbers are uncalibrated, so: a dial
+    seek.turn_speed: 1.2                # commanded rad/s during a turn pulse. Also a dial
+    seek.left_boost: 2.08               # turns are commanded this much harder (left / right): found on the floor
+    seek.right_boost: 2.08
+    seek.arrive_cover_frac: 0.70        # ARRIVED = the object covers this much of the whole picture AND the floor has all
+                                        # but disappeared behind it. While floor is in view there is room to drive on
+    seek.final_push_s: 0.0              # then drive straight on, blind, this long (0 = don't)
+    seek.avoid: true
+    seek.obstacle_range_m: 0.30         # only used while the IR sensors are not reporting (seek.ir_fresh_s): see robot.yaml ir_node
