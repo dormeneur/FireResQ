@@ -91,18 +91,50 @@ The demos use the same rule in its simplest form: sort the victims by distance t
 | Verify | Back off 10 cm and look. A note still standing ahead means a miss, so it tries again |
 | Return | Replay its own moves in reverse to the start square: dead reckoning by action replay, since there are no encoders |
 
-## Short answers to likely questions
+## What we used
 
-- **Why cognitive, not just reactive?**
-  - It keeps a world model (victims, fire, safe zone), reasons over it with an explicit utility, and acts.
-  - It checks the outcome and re-plans after each rescue.
-- **Why fire distance?** Triage: the victim nearest the fire is in the most danger. A nearest-first robot would save the easy one first.
-- **How do you know a pick-up worked?** From the sensors, not the command: the magnet state in simulation, and the back-off-and-look check on the real robot.
-- **No LiDAR, no encoders?**
-  - Distance comes from camera geometry calibrated by known object size, plus the sonar.
-  - Motion is closed-loop on vision.
-- **What would you add next?**
-  - Bayesian belief updates.
-  - Uncertainty in the decision.
-  - Active perception (moving to see better).
-  - A dynamic fire-spread model.
+| Part | What it is | Job |
+| --- | --- | --- |
+| Raspberry Pi 3B | the robot's computer (Python, OpenCV) | vision, decisions, web dashboard |
+| Arduino Uno + L293D motor shield | motor controller, USB serial to the Pi | drives 4 DC motors; stops them if the Pi goes silent for 400 ms (safety watchdog) |
+| OV5647 ribbon camera | the only camera (no depth) | finds victims and fire; mounted sideways, rotated back in software |
+| HC-SR04 ultrasonic on an MG90S servo | sonar the servo can point | checks distances; tells when something is on the magnet |
+| Magnet at the front | permanent magnet | picks up the victims (toy DC motors, so metal) |
+| 8×AA (6 V) | motor batteries | the Pi has its own supply |
+| Web dashboard, port 8090 | `http://pi.local:8090` | live camera with detection boxes, map, actions, the robot's reasoning |
+| ROS 2 Jazzy + Gazebo Harmonic, on Ubuntu 24.04 (WSL2) | the simulation | the full system: SLAM Toolbox, AMCL, Nav2, perception, world model, cognition, mission state machine |
+
+## Viva Q&A
+
+**Why is the simulation so simple, with no noise?**
+We also built a full 5 × 5 m arena with walls, obstacles and a victim hidden behind a partition (`./run_demo.sh`). It maps the arena with SLAM, plans paths with Nav2 and rescues all three, but it takes several minutes. For the demo we use a small 3 × 3 m arena that shows the same decision in about 2 minutes. You're right that the sensors are noise-free in simulation; adding noise is on our to-do list.
+
+**What if there were walls and obstacles?**
+That's the full version: SLAM builds a map and Nav2 plans a route around obstacles. Its decision also counts how reachable each victim is (path length, detours).
+
+**What if something else looked like a victim, e.g. another blue object?**
+Our detector only looks at colour, so it would be fooled. We reduce false hits: an object must show up in several pictures, small specks are ignored, and on the real robot anything behind the fire is ignored. The proper fix is a trained object detector (YOLO is planned); we haven't trained one.
+
+**Why do you need a robot? Can't the victims run away?**
+Real victims may be unconscious, injured or trapped, or the area may be full of smoke where people can't go. Our car is a small model. The same idea (see, rank by danger, rescue, re-check) applies to rescue robots or drones in building and forest fires.
+
+**How do you measure distance without a depth camera?**
+With pinhole-camera geometry. The camera sits at a known height, so the lower an object's base is in the picture, the closer it is: r = h_cam · f / (row − horizon). The horizon row comes from the victims themselves: they're all the same size, so their height in pixels tells us the scale. The sonar double-checks it.
+
+**How does it decide whom to save first?**
+Most danger first: it ranks the victims by distance to the fire, saves the nearest-to-fire one, comes back to the safe zone, and looks again. The full system uses the weighted score U above; the simple robot just compares fire distance.
+
+**Does the real robot do SLAM?**
+No, only the simulation does. The real car has no wheel encoders. It turns until the victim is centred, measuring each turn with the camera, and it returns by replaying its moves backwards.
+
+**How do you know a pick-up worked?**
+It checks with its sensors instead of assuming. In simulation, the magnet reports "attached". The real robot backs off and looks; if the victim is still on the floor, it tries again.
+
+**What stops it from crashing or running away?**
+The Arduino watchdog stops the motors if commands stop for 400 ms. Ctrl+C stops it.
+
+**How did you test it?**
+The simulation has about 490 automated tests that check the robot against Gazebo's true positions. The quick demo was checked the same way on 5 layouts: all 3 victims rescued, in the right order.
+
+**What would you add next?**
+Sensor noise and uncertainty (Bayesian beliefs), a trained victim detector, moving to get a better view (active perception), and fire that spreads.
