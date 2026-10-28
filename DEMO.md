@@ -10,6 +10,8 @@ cd ~/FireResQ && ./run_sim.sh
 
 A Gazebo window opens. The robot looks around, ranks the three victims, and carries each one to the green safe zone, closest to the fire first. It takes about 2 minutes. Run `./run_sim.sh 42` to replay layout 42; a plain `./run_sim.sh` makes a new random layout.
 
+**If the terminal shows progress but no Gazebo window appears**, WSL's window bridge has stalled. Run `wsl --shutdown` in PowerShell, reopen Ubuntu, and run the command again. Do this once before presenting.
+
 **Real robot.** Open Windows PowerShell and run (the password is `pi`):
 
 ```powershell
